@@ -14,7 +14,7 @@ jobs:
   probe:
     runs-on: ubuntu-latest
     steps:
-      - name: Fetch old ChatGPT playable page
+      - name: Fetch and inspect old ChatGPT playable page
         shell: bash
         run: |
           set +e
@@ -31,8 +31,12 @@ jobs:
           echo "has_v0768=$(grep -aoc '0.768' source.html 2>/dev/null || true)"
           echo "has_modloader=$(grep -aoc -E 'ModLoader|modDataValueZipList|BeforeSC2' source.html 2>/dev/null || true)"
           echo "has_cloudflare_block=$(grep -aoc -E 'Sorry, you have been blocked|Cloudflare Ray ID' source.html 2>/dev/null || true)"
-          echo '--- first 300 bytes ---'
-          head -c 300 source.html 2>/dev/null | tr '\n' ' ' || true
+          echo '--- absolute URLs ---'
+          grep -aoE 'https?://[^"'"'"'<> )]+' source.html | sort -u || true
+          echo '--- src/href/fetch/import references ---'
+          grep -aoE '(src|href)=["'"'"'][^"'"'"']+|fetch\([^)]*\)|import\([^)]*\)' source.html | head -100 || true
+          echo '--- full wrapper source ---'
+          cat source.html
           echo
 
       - name: Probe Aoki+Mysterious public game root
