@@ -14,30 +14,38 @@ jobs:
   probe:
     runs-on: ubuntu-latest
     steps:
-      - name: Inspect live Aoki+Mysterious HTML and image routing
+      - name: Discover DOLMods Aoki+Mysterious download endpoint
         shell: bash
         run: |
           set -euo pipefail
-          GAME='https://dolp.dolmods.net/aokimyst/'
-          curl -fL --max-time 120 -A 'Mozilla/5.0' "$GAME" -o mys.html
-          echo "game_bytes=$(wc -c < mys.html)"
-          echo '--- base tags ---'
-          grep -aoiE '<base[^>]*>' mys.html | head -20 || true
-          echo '--- card-logo contexts ---'
-          grep -aon -m 5 -C 1 'card-logo.png' mys.html || true
-          echo '--- first literal image refs ---'
-          grep -aoE 'https?://[^"'"'"'<> )]+\.(png|gif|webp|jpg|jpeg)' mys.html | sort -u | head -100 || true
-          echo '--- first relative img refs ---'
-          grep -aoE '(\.\./|\./|/)?img/[A-Za-z0-9_./${}-]+\.(png|gif|webp|jpg|jpeg)' mys.html | sort -u | head -100 || true
+          for HOMEURL in 'https://dolmods.net/' 'https://beta.dolmods.net/'; do
+            echo "================ $HOMEURL ================"
+            curl -fL --max-time 60 -A 'Mozilla/5.0' "$HOMEURL" -o home.html
+            echo "home_bytes=$(wc -c < home.html)"
+            echo '--- aokimyst contexts ---'
+            grep -ain -m 30 -C 3 -E 'aokimyst|Aoki\+Mysterious|aoki.*myst' home.html || true
+            echo '--- probable ZIP/download/API URLs ---'
+            grep -aoE 'https?://[^"'"'"'<> )]+' home.html | grep -Ei 'aoki|myst|zip|download|api' | sort -u | head -200 || true
+            grep -aoE '[A-Za-z0-9_./?=&%:-]+\.(zip|apk)(\?[A-Za-z0-9_./?=&%:-]+)?' home.html | grep -Ei 'aoki|myst|dolp' | sort -u | head -200 || true
+            echo '--- scripts ---'
+            grep -aoE '<script[^>]+src=["'"'"'][^"'"'"']+' home.html | head -100 || true
+          done
 
-          echo '--- HEAD tests for known file ---'
+      - name: Probe likely download routes and service workers
+        shell: bash
+        run: |
+          set +e
           for URL in \
-            'https://dolp.dolmods.net/aokimyst/img/ui/card-logo.png' \
-            'https://dolp.dolmods.net/img/ui/card-logo.png' \
-            'https://dolp.dolmods.net/aokimyst/img/body/base-classic.png' \
-            'https://dolp.dolmods.net/img/body/base-classic.png' \
-            'https://dolmods.net/dolp/aokimyst/img/ui/card-logo.png' \
-            'https://beta.dolmods.net/dolp/aokimyst/img/ui/card-logo.png'; do
+            'https://dolp.dolmods.net/aokimyst/sw.js' \
+            'https://dolp.dolmods.net/sw.js' \
+            'https://dolmods.net/dolp/aokimyst.zip' \
+            'https://beta.dolmods.net/dolp/aokimyst.zip' \
+            'https://dolp.dolmods.net/aokimyst.zip' \
+            'https://dolmods.net/download/dolp/aokimyst' \
+            'https://beta.dolmods.net/download/dolp/aokimyst' \
+            'https://dolmods.net/api/download/dolp/aokimyst' \
+            'https://beta.dolmods.net/api/download/dolp/aokimyst'; do
             echo "=== $URL ==="
-            curl -L -sS -o /dev/null -w 'HTTP=%{http_code} TYPE=%{content_type} SIZE=%{size_download} FINAL=%{url_effective}\n' "$URL" || true
+            curl -L -sS --max-time 30 -o probe.out -w 'HTTP=%{http_code} TYPE=%{content_type} SIZE=%{size_download} FINAL=%{url_effective}\n' "$URL" || true
+            if [ $(wc -c < probe.out 2>/dev/null || echo 0) -lt 20000 ]; then head -c 1000 probe.out 2>/dev/null | tr '\n' ' ' || true; echo; fi
           done
