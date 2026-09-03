@@ -180,13 +180,13 @@ jobs:
             const mappedPath = imageMap[normalized];
             if (!mappedPath) return fetch(request);
             const cdnUrl = IMAGE_CDN + mappedPath;
-  // iOS/WKWebView can reject a cross-origin 302 returned by a service worker.
-  // Fetch the image as an opaque no-CORS response and serve it directly instead.
-  return fetch(cdnUrl, {
-    mode: "no-cors",
-    credentials: "omit",
-    cache: "force-cache",
-  });
+            // iOS/WKWebView can reject a cross-origin 302 returned by a service worker.
+            // Fetch the image as an opaque no-CORS response and serve it directly instead.
+            return fetch(cdnUrl, {
+              mode: "no-cors",
+              credentials: "omit",
+              cache: "force-cache",
+            });
           }
 
           self.addEventListener("fetch", event => {
