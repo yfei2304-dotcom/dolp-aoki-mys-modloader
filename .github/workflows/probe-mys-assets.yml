@@ -14,31 +14,40 @@ jobs:
   probe:
     runs-on: ubuntu-latest
     steps:
-      - name: Inspect MYS img.json and CDN mappings
+      - name: Inspect screenshot image mappings and CDN headers
         shell: bash
         run: |
           set -euo pipefail
           ROOT='https://dolp.dolmods.net/aokimyst/'
           curl -fL --max-time 120 -A 'Mozilla/5.0' "${ROOT}img.json" -o img.json
-          echo "img_json_bytes=$(wc -c < img.json)"
           python3 - <<'PY'
           import json
           from pathlib import Path
           d=json.loads(Path('img.json').read_text('utf-8'))
+          keys=[
+            'misc/sky/stars/star-2.png',
+            'misc/sky/stars/star-3.png',
+            'misc/sky/stars/star-4.png',
+            'misc/locations/banner/ice.png',
+            'misc/locations/banner/water.png',
+            'misc/locations/banner/reflective.png',
+            'misc/locations/banner/snow.png',
+            'ui/card-logo.png',
+          ]
           print('mapping_count=',len(d))
-          keys=['ui/card-logo.png','ui/refresh.png','ui/reload.png','body/base-classic.png','body/base-head.png','body/mannequin/base-body.png']
           for k in keys:
               print(f'{k} => {d.get(k)}')
-          print('first_10=')
-          for i,(k,v) in enumerate(d.items()):
-              if i>=10: break
-              print(k,'=>',v)
           Path('selected.txt').write_text('\n'.join(f'{k}\t{d.get(k) or ""}' for k in keys),'utf-8')
           PY
-          echo '--- CDN tests ---'
+
+          echo '--- CDN headers/tests ---'
           while IFS=$'\t' read -r key mapped; do
-            [ -n "$mapped" ] || continue
+            echo "=== $key ==="
+            if [ -z "$mapped" ]; then
+              echo "MISSING_IN_MAP"
+              continue
+            fi
             url="https://img.dolmods.net/${mapped}"
-            echo "=== $key -> $url ==="
-            curl -L -sS --max-time 30 -o /dev/null -w 'HTTP=%{http_code} TYPE=%{content_type} SIZE=%{size_download} FINAL=%{url_effective}\n' "$url" || true
+            echo "$url"
+            curl -L -sS --max-time 30 -D - -o /dev/null "$url" | grep -iE '^(HTTP/|content-type:|content-length:|access-control-allow-origin:|cross-origin-resource-policy:|cache-control:|location:)' || true
           done < selected.txt
