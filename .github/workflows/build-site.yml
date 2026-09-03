@@ -89,7 +89,12 @@ jobs:
           from pathlib import Path
           from concurrent.futures import ThreadPoolExecutor, as_completed
 
-          mapping=json.loads(Path('/tmp/dolp-build/img.json').read_text('utf-8'))
+          raw_mapping=json.loads(Path('/tmp/dolp-build/img.json').read_text('utf-8'))
+          allowed_ext={'.png','.gif','.jpg','.jpeg','.webp','.svg','.avif'}
+          mapping={k:v for k,v in raw_mapping.items() if Path(k).suffix.lower() in allowed_ext}
+          skipped=[k for k in raw_mapping if k not in mapping]
+          print(f'image_mappings={len(mapping)}, skipped_non_images={len(skipped)}')
+          for k in skipped[:20]: print('skip_non_image:', k)
           root=Path('/tmp/dolp-site/img')
           root.mkdir(parents=True, exist_ok=True)
 
