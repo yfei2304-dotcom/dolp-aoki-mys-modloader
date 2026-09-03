@@ -125,12 +125,12 @@ jobs:
                       time.sleep(0.4 * (attempt + 1))
               return key, 0, repr(last)
 
-          total=len(mapping)
+          total=len(image_items)
           failures=[]
           bytes_total=0
           done=0
           with ThreadPoolExecutor(max_workers=24) as pool:
-              futures=[pool.submit(download, item) for item in mapping.items()]
+              futures=[pool.submit(download, item) for item in image_items]
               for fut in as_completed(futures):
                   key, size, err=fut.result()
                   done += 1
