@@ -1,0 +1,35 @@
+name: Probe old site service worker
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/probe-worker.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probe-worker:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Inspect service worker and related files
+        shell: bash
+        run: |
+          set +e
+          ROOT='https://dolp-aoki-modloader.yfei2304.chatgpt.site/'
+          BUILD='2a6fde183ed1af77'
+          UA='Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 Version/18.0 Mobile/15E148 Safari/604.1'
+          for path in "sw.js?build=$BUILD" 'versions.html' 'manifest.webmanifest' 'game-v0768.html?build='$BUILD; do
+            echo "=== $path ==="
+            curl -L --max-time 120 -A "$UA" -sS -D headers.txt -o body.out -w 'HTTP=%{http_code} SIZE=%{size_download} FINAL=%{url_effective}\n' "$ROOT$path" || true
+            grep -iE '^(content-type|content-length|cache-control|etag|location|content-encoding):' headers.txt || true
+            echo '--- URLs ---'
+            grep -aoE 'https?://[^"'"'"'<> )]+' body.out | sort -u || true
+            echo '--- asset-like refs ---'
+            grep -aoE '[A-Za-z0-9_./?=&%:-]+\.(html|js|json|zip|gz|br|zst|bin|dat)(\?[A-Za-z0-9_./?=&%:-]+)?' body.out | sort -u | head -200 || true
+            echo '--- body ---'
+            if [ $(wc -c < body.out) -lt 100000 ]; then cat body.out; else head -c 20000 body.out; fi
+            echo
+          done
