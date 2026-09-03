@@ -1,0 +1,312 @@
+name: Build Aoki+Mysterious ModLoader site
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/build-site.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pages: write
+
+concurrency:
+  group: dolp-site-build
+  cancel-in-progress: true
+
+jobs:
+  build-site:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Download and verify original v0.768 ModLoader bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+          ROOT='https://dolp-aoki-modloader.yfei2304.chatgpt.site/'
+          EXPECTED_SIZE='67147773'
+          EXPECTED_SHA='ebda02401b169579b30bfd3796e685e60bee23d46ee06f61548c5e7f0f2108ef'
+          mkdir -p /tmp/dolp-build /tmp/dolp-site/payload
+
+          curl -fL --retry 2 --max-time 180 \
+            -A 'Mozilla/5.0 (GitHub Actions DoLP builder)' \
+            "${ROOT}payload/game-v0768.bundle" \
+            -o /tmp/dolp-build/source.bundle
+
+          echo "compressed_bytes=$(wc -c < /tmp/dolp-build/source.bundle)"
+          gzip -dc /tmp/dolp-build/source.bundle > /tmp/dolp-build/source.html
+
+          actual_size=$(wc -c < /tmp/dolp-build/source.html)
+          actual_sha=$(sha256sum /tmp/dolp-build/source.html | awk '{print $1}')
+          echo "uncompressed_bytes=$actual_size"
+          echo "source_sha256=$actual_sha"
+
+          test "$actual_size" = "$EXPECTED_SIZE"
+          test "$actual_sha" = "$EXPECTED_SHA"
+          grep -aq '0.5.11.9 DoLP v0.768' /tmp/dolp-build/source.html
+          grep -aq 'window.modDataValueZipList' /tmp/dolp-build/source.html
+
+      - name: Redirect game image paths to Aoki+Mysterious
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          src = Path('/tmp/dolp-build/source.html')
+          out = Path('/tmp/dolp-build/game-v0768-mys.html')
+          text = src.read_text('utf-8')
+          asset = 'https://dolp.dolmods.net/aokimyst/img/'
+
+          before = text.count('img/')
+          text = text.replace('./img/', asset)
+          text, replaced = re.subn(r'(?<![/A-Za-z0-9_])img/', asset, text)
+
+          if '0.5.11.9 DoLP v0.768' not in text:
+              raise SystemExit('v0.768 marker disappeared during patch')
+          if 'window.modDataValueZipList' not in text:
+              raise SystemExit('ModLoader payload marker disappeared during patch')
+          if './img/' in text:
+              raise SystemExit('relative ./img/ path remains')
+          leftovers = re.findall(r'(?<!/)img/', text)
+          if leftovers:
+              raise SystemExit(f'unpatched img/ paths remain: {len(leftovers)}')
+
+          out.write_text(text, 'utf-8', newline='')
+          print(f'img/path occurrences before patch: {before}')
+          print(f'regex replacements: {replaced}')
+          print(f'patched bytes: {out.stat().st_size}')
+          PY
+
+          gzip -9 -n -c /tmp/dolp-build/game-v0768-mys.html > /tmp/dolp-site/payload/game-v0768.bundle
+          echo "patched_compressed_bytes=$(wc -c < /tmp/dolp-site/payload/game-v0768.bundle)"
+          echo "patched_uncompressed_bytes=$(wc -c < /tmp/dolp-build/game-v0768-mys.html)"
+
+      - name: Fetch local gzip fallback library
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fL --retry 2 --max-time 60 \
+            'https://dolp-aoki-modloader.yfei2304.chatgpt.site/pako_inflate.min.js' \
+            -o /tmp/dolp-site/pako_inflate.min.js
+          test $(wc -c < /tmp/dolp-site/pako_inflate.min.js) -gt 1000
+
+      - name: Build Service Worker and launcher
+        shell: bash
+        run: |
+          set -euo pipefail
+          BUILD_ID="mys-${GITHUB_SHA:0:12}"
+          COMPRESSED=$(wc -c < /tmp/dolp-site/payload/game-v0768.bundle)
+          UNCOMPRESSED=$(wc -c < /tmp/dolp-build/game-v0768-mys.html)
+
+          cat > /tmp/dolp-site/sw.js <<EOF
+          "use strict";
+          importScripts("./pako_inflate.min.js");
+
+          const BUILD_ID = "${BUILD_ID}";
+          const GAME = {
+            bundle: "payload/game-v0768.bundle",
+            marker: "0.5.11.9 DoLP v0.768",
+            compressedBytes: ${COMPRESSED},
+            uncompressedBytes: ${UNCOMPRESSED},
+          };
+
+          self.addEventListener("install", event => event.waitUntil(self.skipWaiting()));
+          self.addEventListener("activate", event => event.waitUntil(self.clients.claim()));
+          self.addEventListener("message", event => {
+            if (event.data === "skipWaiting") self.skipWaiting();
+            if (event.data === "getBuildId" && event.ports[0]) event.ports[0].postMessage(BUILD_ID);
+          });
+
+          function isGame(pathname) {
+            return pathname.endsWith("/game-v0768.html");
+          }
+
+          async function serveGame() {
+            const bundleUrl = new URL(GAME.bundle, self.registration.scope);
+            const response = await fetch(bundleUrl, { cache: "no-store" });
+            if (!response.ok) throw new Error("Game bundle request failed: " + response.status);
+
+            let body;
+            if (typeof DecompressionStream === "function" && response.body) {
+              body = response.body.pipeThrough(new DecompressionStream("gzip"));
+            } else {
+              const compressed = new Uint8Array(await response.arrayBuffer());
+              body = self.pako.ungzip(compressed);
+            }
+
+            return new Response(body, {
+              status: 200,
+              headers: {
+                "Content-Type": "text/html; charset=utf-8",
+                "Cache-Control": "no-store",
+                "X-DoLP-Web-Build": BUILD_ID,
+                "X-DoLP-Art-Pack": "aokiutage_mys",
+              },
+            });
+          }
+
+          self.addEventListener("fetch", event => {
+            if (event.request.method !== "GET") return;
+            const url = new URL(event.request.url);
+            if (url.origin !== self.location.origin || !isGame(url.pathname)) return;
+            event.respondWith(serveGame().catch(error => {
+              console.error(error);
+              return new Response(
+                "<!doctype html><meta charset=utf-8><title>DoLP 載入失敗</title><p>遊戲核心載入失敗，請回到主網址重新整理。</p>",
+                { status: 503, headers: { "Content-Type": "text/html; charset=utf-8" } },
+              );
+            }));
+          });
+          EOF
+
+          cat > /tmp/dolp-build/launcher.html <<EOF
+          <!doctype html>
+          <html lang="zh-Hant">
+          <head>
+            <meta charset="utf-8">
+            <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+            <meta name="theme-color" content="#101014">
+            <title>DoLP v0.768 · Aoki+Mysterious · ModLoader</title>
+            <style>
+              :root{color-scheme:dark;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}*{box-sizing:border-box}
+              body{margin:0;min-height:100svh;display:grid;place-items:center;background:#101014;color:#f2edf7;padding:1.2rem}
+              main{width:min(88vw,29rem);text-align:center}.spinner{width:2.7rem;height:2.7rem;margin:0 auto 1.2rem;border:.28rem solid #3a3440;border-top-color:#d49bea;border-radius:50%;animation:spin .85s linear infinite}
+              h1{margin:0 0 .55rem;font-size:1.16rem}p{margin:0;color:#bdb4c5;line-height:1.55;font-size:.94rem}.actions{margin-top:1.2rem}[hidden]{display:none!important}
+              button{padding:.72rem 1.1rem;border:0;border-radius:.65rem;background:#ba7ad3;color:#120d15;font:inherit;font-weight:700}@keyframes spin{to{transform:rotate(360deg)}}
+            </style>
+          </head>
+          <body>
+            <main>
+              <div class="spinner" id="spinner"></div>
+              <h1 id="status">正在準備 DoLP v0.768…</h1>
+              <p id="detail">Aoki+Mysterious · ModLoader，第一次開啟可能需要幾秒。</p>
+              <div class="actions" id="actions" hidden><button id="retry" type="button">重新載入</button></div>
+            </main>
+            <noscript>此遊戲需要 JavaScript。</noscript>
+            <script>
+              (() => {
+                "use strict";
+                const BUILD_ID = "${BUILD_ID}";
+                const GAME_PAGE = "game-v0768.html";
+                const siteRoot = new URL("./", location.href);
+                const targetUrl = new URL(GAME_PAGE, siteRoot);
+                targetUrl.searchParams.set("build", BUILD_ID);
+                const status = document.getElementById("status");
+                const detail = document.getElementById("detail");
+                const spinner = document.getElementById("spinner");
+                const actions = document.getElementById("actions");
+                document.getElementById("retry").addEventListener("click", () => location.reload());
+                const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
+
+                function readWorkerBuildId(worker) {
+                  return new Promise(resolve => {
+                    const channel = new MessageChannel();
+                    const timeout = setTimeout(() => resolve(null), 800);
+                    channel.port1.onmessage = event => { clearTimeout(timeout); resolve(event.data); };
+                    worker.postMessage("getBuildId", [channel.port2]);
+                  });
+                }
+
+                async function waitForCurrentWorker(registration) {
+                  const deadline = Date.now() + 20000;
+                  while (Date.now() < deadline) {
+                    const candidate = registration.installing || registration.waiting;
+                    if (candidate && candidate.state === "installed") candidate.postMessage("skipWaiting");
+                    if (registration.active && (await readWorkerBuildId(registration.active)) === BUILD_ID) return;
+                    await delay(100);
+                  }
+                  throw new Error("網站載入器沒有完成更新，請重新整理後再試。");
+                }
+
+                async function start() {
+                  if (!("serviceWorker" in navigator)) throw new Error("這個瀏覽器不支援遊戲所需的網站載入器。");
+                  const workerUrl = new URL("sw.js", siteRoot);
+                  workerUrl.searchParams.set("build", BUILD_ID);
+                  const registration = await navigator.serviceWorker.register(workerUrl, {
+                    scope: siteRoot.pathname,
+                    updateViaCache: "none",
+                  });
+                  await registration.update().catch(() => undefined);
+                  await waitForCurrentWorker(registration);
+
+                  const onTarget = location.pathname.endsWith("/" + GAME_PAGE);
+                  if (!onTarget) {
+                    status.textContent = "載入器已就緒，正在進入遊戲…";
+                    location.replace(targetUrl.href);
+                    return;
+                  }
+
+                  const attemptKey = "dolp-mys-sw-boot-" + BUILD_ID;
+                  const attempts = Number(sessionStorage.getItem(attemptKey) || "0") + 1;
+                  sessionStorage.setItem(attemptKey, String(attempts));
+                  if (attempts > 3) throw new Error("遊戲核心沒有被 Service Worker 正確接管，請回到主網址再試一次。");
+                  location.replace(targetUrl.href);
+                }
+
+                start().catch(error => {
+                  console.error(error);
+                  spinner.hidden = true;
+                  status.textContent = "遊戲沒有成功載入";
+                  detail.textContent = error instanceof Error ? error.message : String(error);
+                  actions.hidden = false;
+                });
+              })();
+            </script>
+          </body>
+          </html>
+          EOF
+
+          cp /tmp/dolp-build/launcher.html /tmp/dolp-site/index.html
+          cp /tmp/dolp-build/launcher.html /tmp/dolp-site/game-v0768.html
+          touch /tmp/dolp-site/.nojekyll
+
+          cat > /tmp/dolp-site/build-info.json <<EOF
+          {"core":"0.5.11.9 DoLP v0.768","artPack":"aokiutage_mys","build":"${BUILD_ID}","sourceSha256":"ebda02401b169579b30bfd3796e685e60bee23d46ee06f61548c5e7f0f2108ef","compressedBytes":${COMPRESSED},"uncompressedBytes":${UNCOMPRESSED}}
+          EOF
+
+          echo "BUILD_ID=$BUILD_ID"
+          find /tmp/dolp-site -maxdepth 2 -type f -printf '%P %s bytes\n' | sort
+
+      - name: Probe MYS image host
+        shell: bash
+        run: |
+          set +e
+          curl -L -sS -I 'https://dolp.dolmods.net/aokimyst/img/ui/card-logo.png' | grep -iE 'HTTP/|content-type|content-length|access-control-allow-origin|cache-control' || true
+
+      - name: Publish generated site to gh-pages branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git switch --orphan gh-pages-build
+          git rm -rf . >/dev/null 2>&1 || true
+          cp -a /tmp/dolp-site/. .
+          git add -A
+          git commit -m "Deploy DoLP v0.768 Aoki+Mysterious site"
+          git push --force origin HEAD:gh-pages
+
+      - name: Try to enable GitHub Pages from gh-pages
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set +e
+          code=$(curl -sS -o /tmp/pages-response.json -w '%{http_code}' \
+            -X POST \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H 'Accept: application/vnd.github+json' \
+            -H 'X-GitHub-Api-Version: 2022-11-28' \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/pages" \
+            -d '{"source":{"branch":"gh-pages","path":"/"}}')
+          echo "pages_enable_http=$code"
+          cat /tmp/pages-response.json || true
+          echo
+          exit 0
