@@ -1,0 +1,50 @@
+name: Probe old playable source
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/probe-source.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fetch old ChatGPT playable page
+        shell: bash
+        run: |
+          set +e
+          URL='https://dolp-aoki-modloader.yfei2304.chatgpt.site/game-v0768.html?build=2a6fde183ed1af77'
+          UA='Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 Version/18.0 Mobile/15E148 Safari/604.1'
+          code=$(curl -L --max-time 120 --retry 1 -A "$UA" -o source.html -sS -w '%{http_code}' "$URL")
+          curl_rc=$?
+          size=$(wc -c < source.html 2>/dev/null || echo 0)
+          sha=$(sha256sum source.html 2>/dev/null | awk '{print $1}')
+          echo "curl_rc=$curl_rc"
+          echo "http_code=$code"
+          echo "size=$size"
+          echo "sha256=$sha"
+          echo "has_v0768=$(grep -aoc '0.768' source.html 2>/dev/null || true)"
+          echo "has_modloader=$(grep -aoc -E 'ModLoader|modDataValueZipList|BeforeSC2' source.html 2>/dev/null || true)"
+          echo "has_cloudflare_block=$(grep -aoc -E 'Sorry, you have been blocked|Cloudflare Ray ID' source.html 2>/dev/null || true)"
+          echo '--- first 300 bytes ---'
+          head -c 300 source.html 2>/dev/null | tr '\n' ' ' || true
+          echo
+
+      - name: Probe Aoki+Mysterious public game root
+        shell: bash
+        run: |
+          set +e
+          for URL in \
+            'https://dolmods.net/dolp/aokimyst/' \
+            'https://beta.dolmods.net/dolp/aokimyst/' \
+            'https://dolp.dolmods.net/aokimyst/'; do
+            echo "=== $URL ==="
+            curl -L --max-time 30 -A 'Mozilla/5.0' -sS -o mys.out -w 'HTTP=%{http_code} SIZE=%{size_download} FINAL=%{url_effective}\n' "$URL" || true
+            head -c 120 mys.out 2>/dev/null | tr '\n' ' ' || true
+            echo
+          done
