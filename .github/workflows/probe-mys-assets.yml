@@ -1,4 +1,4 @@
-name: Probe Aoki Mysterious asset paths
+name: Probe Aoki Mysterious asset map
 
 on:
   push:
@@ -14,38 +14,31 @@ jobs:
   probe:
     runs-on: ubuntu-latest
     steps:
-      - name: Discover DOLMods Aoki+Mysterious download endpoint
+      - name: Inspect MYS img.json and CDN mappings
         shell: bash
         run: |
           set -euo pipefail
-          for HOMEURL in 'https://dolmods.net/' 'https://beta.dolmods.net/'; do
-            echo "================ $HOMEURL ================"
-            curl -fL --max-time 60 -A 'Mozilla/5.0' "$HOMEURL" -o home.html
-            echo "home_bytes=$(wc -c < home.html)"
-            echo '--- aokimyst contexts ---'
-            grep -ain -m 30 -C 3 -E 'aokimyst|Aoki\+Mysterious|aoki.*myst' home.html || true
-            echo '--- probable ZIP/download/API URLs ---'
-            grep -aoE 'https?://[^"'"'"'<> )]+' home.html | grep -Ei 'aoki|myst|zip|download|api' | sort -u | head -200 || true
-            grep -aoE '[A-Za-z0-9_./?=&%:-]+\.(zip|apk)(\?[A-Za-z0-9_./?=&%:-]+)?' home.html | grep -Ei 'aoki|myst|dolp' | sort -u | head -200 || true
-            echo '--- scripts ---'
-            grep -aoE '<script[^>]+src=["'"'"'][^"'"'"']+' home.html | head -100 || true
-          done
-
-      - name: Probe likely download routes and service workers
-        shell: bash
-        run: |
-          set +e
-          for URL in \
-            'https://dolp.dolmods.net/aokimyst/sw.js' \
-            'https://dolp.dolmods.net/sw.js' \
-            'https://dolmods.net/dolp/aokimyst.zip' \
-            'https://beta.dolmods.net/dolp/aokimyst.zip' \
-            'https://dolp.dolmods.net/aokimyst.zip' \
-            'https://dolmods.net/download/dolp/aokimyst' \
-            'https://beta.dolmods.net/download/dolp/aokimyst' \
-            'https://dolmods.net/api/download/dolp/aokimyst' \
-            'https://beta.dolmods.net/api/download/dolp/aokimyst'; do
-            echo "=== $URL ==="
-            curl -L -sS --max-time 30 -o probe.out -w 'HTTP=%{http_code} TYPE=%{content_type} SIZE=%{size_download} FINAL=%{url_effective}\n' "$URL" || true
-            if [ $(wc -c < probe.out 2>/dev/null || echo 0) -lt 20000 ]; then head -c 1000 probe.out 2>/dev/null | tr '\n' ' ' || true; echo; fi
-          done
+          ROOT='https://dolp.dolmods.net/aokimyst/'
+          curl -fL --max-time 120 -A 'Mozilla/5.0' "${ROOT}img.json" -o img.json
+          echo "img_json_bytes=$(wc -c < img.json)"
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          d=json.loads(Path('img.json').read_text('utf-8'))
+          print('mapping_count=',len(d))
+          keys=['ui/card-logo.png','ui/refresh.png','ui/reload.png','body/base-classic.png','body/base-head.png','body/mannequin/base-body.png']
+          for k in keys:
+              print(f'{k} => {d.get(k)}')
+          print('first_10=')
+          for i,(k,v) in enumerate(d.items()):
+              if i>=10: break
+              print(k,'=>',v)
+          Path('selected.txt').write_text('\n'.join(f'{k}\t{d.get(k) or ""}' for k in keys),'utf-8')
+          PY
+          echo '--- CDN tests ---'
+          while IFS=$'\t' read -r key mapped; do
+            [ -n "$mapped" ] || continue
+            url="https://img.dolmods.net/${mapped}"
+            echo "=== $key -> $url ==="
+            curl -L -sS --max-time 30 -o /dev/null -w 'HTTP=%{http_code} TYPE=%{content_type} SIZE=%{size_download} FINAL=%{url_effective}\n' "$url" || true
+          done < selected.txt
