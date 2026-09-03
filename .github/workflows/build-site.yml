@@ -17,6 +17,7 @@ concurrency:
 jobs:
   build-site:
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -32,80 +33,145 @@ jobs:
           EXPECTED_SHA='ebda02401b169579b30bfd3796e685e60bee23d46ee06f61548c5e7f0f2108ef'
           mkdir -p /tmp/dolp-build /tmp/dolp-site/payload
 
-          curl -fL --retry 2 --max-time 180 \
-            -A 'Mozilla/5.0 (GitHub Actions DoLP builder)' \
-            "${ROOT}payload/game-v0768.bundle" \
-            -o /tmp/dolp-build/source.bundle
+          curl -fL --retry 2 --max-time 180             -A 'Mozilla/5.0 (GitHub Actions DoLP builder)'             "${ROOT}payload/game-v0768.bundle"             -o /tmp/dolp-build/source.bundle
 
           gzip -dc /tmp/dolp-build/source.bundle > /tmp/dolp-build/source.html
           actual_size=$(wc -c < /tmp/dolp-build/source.html)
           actual_sha=$(sha256sum /tmp/dolp-build/source.html | awk '{print $1}')
-          compressed_size=$(wc -c < /tmp/dolp-build/source.bundle)
 
-          echo "compressed_bytes=$compressed_size"
           echo "uncompressed_bytes=$actual_size"
           echo "source_sha256=$actual_sha"
-
           test "$actual_size" = "$EXPECTED_SIZE"
           test "$actual_sha" = "$EXPECTED_SHA"
           grep -aq '0.5.11.9 DoLP v0.768' /tmp/dolp-build/source.html
           grep -aq 'window.modDataValueZipList' /tmp/dolp-build/source.html
 
-          # Keep the verified original bundle byte-for-byte unchanged.
           cp /tmp/dolp-build/source.bundle /tmp/dolp-site/payload/game-v0768.bundle
 
-      - name: Download and verify Aoki+Mysterious image map
+      - name: Download MYS image map
         shell: bash
         run: |
           set -euo pipefail
-          curl -fL --retry 2 --max-time 120 \
-            -A 'Mozilla/5.0 (GitHub Actions DoLP builder)' \
-            'https://dolp.dolmods.net/aokimyst/img.json' \
-            -o /tmp/dolp-site/img.json
+          curl -fL --retry 3 --max-time 120             -A 'Mozilla/5.0 (GitHub Actions DoLP builder)'             'https://dolp.dolmods.net/aokimyst/img.json'             -o /tmp/dolp-build/img.json
 
           python3 - <<'PY'
           import json
           from pathlib import Path
-          d=json.loads(Path('/tmp/dolp-site/img.json').read_text('utf-8'))
+          d=json.loads(Path('/tmp/dolp-build/img.json').read_text('utf-8'))
+          required=[
+              'misc/sky/stars/star-2.png',
+              'misc/sky/stars/star-3.png',
+              'misc/sky/stars/star-4.png',
+              'misc/locations/banner/ice.png',
+              'misc/locations/banner/water.png',
+              'misc/locations/banner/reflective.png',
+              'misc/locations/banner/snow.png',
+              'ui/card-logo.png',
+              'body/base-classic.png',
+              'body/base-head.png',
+          ]
+          print('mapping_count=', len(d))
           if len(d) < 30000:
               raise SystemExit(f'Unexpectedly small MYS image map: {len(d)}')
-          required={
-              'ui/card-logo.png':'6aRWycSum9Tl93LPqEJH5O',
-              'ui/refresh.png':'xpLyuSN9skCtReeQbMztZ',
-              'body/base-classic.png':'4Ba2xdWPYcbpYFohPp6gng',
-              'body/base-head.png':'19e1xcECkrWFaj8RtWdbbK',
-          }
-          for key, expected in required.items():
-              actual=d.get(key)
-              print(f'{key} => {actual}')
-              if actual != expected:
-                  raise SystemExit(f'MYS map mismatch for {key}: {actual!r}')
-          print('mapping_count=',len(d))
+          missing=[k for k in required if not d.get(k)]
+          for k in required:
+              print(k, '=>', d.get(k))
+          if missing:
+              raise SystemExit('Required screenshot assets missing from MYS map: ' + ', '.join(missing))
           PY
 
-          curl -fL --retry 2 --max-time 30 \
-            'https://img.dolmods.net/4Ba2xdWPYcbpYFohPp6gng' \
-            -o /tmp/dolp-build/mys-probe.png
-          file /tmp/dolp-build/mys-probe.png
-          test $(wc -c < /tmp/dolp-build/mys-probe.png) -gt 1000
+      - name: Materialize all Aoki+Mysterious images into site
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, os, time, urllib.request
+          from pathlib import Path
+          from concurrent.futures import ThreadPoolExecutor, as_completed
+
+          mapping=json.loads(Path('/tmp/dolp-build/img.json').read_text('utf-8'))
+          root=Path('/tmp/dolp-site/img')
+          root.mkdir(parents=True, exist_ok=True)
+
+          def safe_dest(key):
+              key=key.replace('\\', '/').lstrip('/')
+              parts=[p for p in key.split('/') if p not in ('', '.')]
+              if '..' in parts:
+                  raise ValueError(f'unsafe path: {key}')
+              return root.joinpath(*parts)
+
+          def download(item):
+              key, mapped=item
+              dest=safe_dest(key)
+              dest.parent.mkdir(parents=True, exist_ok=True)
+              url='https://img.dolmods.net/' + mapped
+              last=None
+              for attempt in range(4):
+                  try:
+                      req=urllib.request.Request(url, headers={'User-Agent':'Mozilla/5.0 (GitHub Actions DoLP builder)'})
+                      with urllib.request.urlopen(req, timeout=45) as r:
+                          data=r.read()
+                      if not data:
+                          raise RuntimeError('empty response')
+                      dest.write_bytes(data)
+                      return key, len(data), None
+                  except Exception as e:
+                      last=e
+                      time.sleep(0.4 * (attempt + 1))
+              return key, 0, repr(last)
+
+          total=len(mapping)
+          failures=[]
+          bytes_total=0
+          done=0
+          with ThreadPoolExecutor(max_workers=24) as pool:
+              futures=[pool.submit(download, item) for item in mapping.items()]
+              for fut in as_completed(futures):
+                  key, size, err=fut.result()
+                  done += 1
+                  bytes_total += size
+                  if err:
+                      failures.append((key, err))
+                  if done % 1000 == 0 or done == total:
+                      print(f'images {done}/{total}, bytes={bytes_total}, failures={len(failures)}', flush=True)
+
+          if failures:
+              print('first failures:')
+              for key, err in failures[:30]:
+                  print(key, err)
+              raise SystemExit(f'Image materialization failed for {len(failures)} files')
+
+          print('image_count=', total)
+          print('image_bytes=', bytes_total)
+          PY
+
+          test -s /tmp/dolp-site/img/misc/sky/stars/star-2.png
+          test -s /tmp/dolp-site/img/misc/sky/stars/star-3.png
+          test -s /tmp/dolp-site/img/misc/sky/stars/star-4.png
+          test -s /tmp/dolp-site/img/misc/locations/banner/ice.png
+          test -s /tmp/dolp-site/img/misc/locations/banner/water.png
+          test -s /tmp/dolp-site/img/misc/locations/banner/reflective.png
+          test -s /tmp/dolp-site/img/misc/locations/banner/snow.png
+          test -s /tmp/dolp-site/img/ui/card-logo.png
+          echo "materialized_files=$(find /tmp/dolp-site/img -type f | wc -l)"
+          echo "materialized_bytes=$(du -sb /tmp/dolp-site/img | awk '{print $1}')"
 
       - name: Fetch local gzip fallback library
         shell: bash
         run: |
           set -euo pipefail
-          curl -fL --retry 2 --max-time 60 \
-            'https://dolp-aoki-modloader.yfei2304.chatgpt.site/pako_inflate.min.js' \
-            -o /tmp/dolp-site/pako_inflate.min.js
+          curl -fL --retry 2 --max-time 60             'https://dolp-aoki-modloader.yfei2304.chatgpt.site/pako_inflate.min.js'             -o /tmp/dolp-site/pako_inflate.min.js
           test $(wc -c < /tmp/dolp-site/pako_inflate.min.js) -gt 1000
 
       - name: Build Service Worker and launcher
         shell: bash
         run: |
           set -euo pipefail
-          BUILD_ID="mys-${GITHUB_SHA:0:12}"
+          BUILD_ID="mys-static-${GITHUB_SHA:0:12}"
           COMPRESSED=$(wc -c < /tmp/dolp-site/payload/game-v0768.bundle)
           UNCOMPRESSED=$(wc -c < /tmp/dolp-build/source.html)
-          MAP_BYTES=$(wc -c < /tmp/dolp-site/img.json)
+          IMAGE_COUNT=$(find /tmp/dolp-site/img -type f | wc -l)
+          IMAGE_BYTES=$(du -sb /tmp/dolp-site/img | awk '{print $1}')
 
           cat > /tmp/dolp-site/sw.js <<EOF
           "use strict";
@@ -113,9 +179,6 @@ jobs:
 
           const BUILD_ID = "${BUILD_ID}";
           const GAME_BUNDLE = "payload/game-v0768.bundle";
-          const IMAGE_MAP_FILE = "img.json";
-          const IMAGE_CDN = "https://img.dolmods.net/";
-          let imageMapPromise = null;
 
           self.addEventListener("install", event => event.waitUntil(self.skipWaiting()));
           self.addEventListener("activate", event => event.waitUntil(self.clients.claim()));
@@ -126,21 +189,6 @@ jobs:
 
           function isGame(pathname) {
             return pathname.endsWith("/game-v0768.html");
-          }
-
-          function isGameImage(pathname) {
-            return pathname.includes("/img/");
-          }
-
-          function getImageMap() {
-            if (!imageMapPromise) {
-              const mapUrl = new URL(IMAGE_MAP_FILE, self.registration.scope);
-              imageMapPromise = fetch(mapUrl, { cache: "no-store" }).then(response => {
-                if (!response.ok) throw new Error("MYS image map request failed: " + response.status);
-                return response.json();
-              });
-            }
-            return imageMapPromise;
           }
 
           async function serveGame() {
@@ -164,28 +212,8 @@ jobs:
                 "Cache-Control": "no-store",
                 "X-DoLP-Web-Build": BUILD_ID,
                 "X-DoLP-Art-Pack": "aokiutage_mys",
+                "X-DoLP-Images": "same-origin-static",
               },
-            });
-          }
-
-          async function serveGameImage(request) {
-            const url = new URL(request.url);
-            const marker = "/img/";
-            const markerIndex = url.pathname.lastIndexOf(marker);
-            if (markerIndex < 0) return fetch(request);
-
-            // Match DOLMods' own service-worker normalization exactly for spaces.
-            const normalized = url.pathname.slice(markerIndex + marker.length).replace(/%20/g, " ");
-            const imageMap = await getImageMap();
-            const mappedPath = imageMap[normalized];
-            if (!mappedPath) return fetch(request);
-            const cdnUrl = IMAGE_CDN + mappedPath;
-            // iOS/WKWebView can reject a cross-origin 302 returned by a service worker.
-            // Fetch the image as an opaque no-CORS response and serve it directly instead.
-            return fetch(cdnUrl, {
-              mode: "no-cors",
-              credentials: "omit",
-              cache: "force-cache",
             });
           }
 
@@ -193,24 +221,15 @@ jobs:
             if (event.request.method !== "GET") return;
             const url = new URL(event.request.url);
             if (url.origin !== self.location.origin) return;
+            if (!isGame(url.pathname)) return;
 
-            if (isGame(url.pathname)) {
-              event.respondWith(serveGame().catch(error => {
-                console.error(error);
-                return new Response(
-                  "<!doctype html><meta charset=utf-8><title>DoLP 載入失敗</title><p>遊戲核心載入失敗，請回到主網址重新整理。</p>",
-                  { status: 503, headers: { "Content-Type": "text/html; charset=utf-8" } },
-                );
-              }));
-              return;
-            }
-
-            if (isGameImage(url.pathname)) {
-              event.respondWith(serveGameImage(event.request).catch(error => {
-                console.error("MYS image redirect failed", error);
-                return fetch(event.request);
-              }));
-            }
+            event.respondWith(serveGame().catch(error => {
+              console.error(error);
+              return new Response(
+                "<!doctype html><meta charset=utf-8><title>DoLP 載入失敗</title><p>遊戲核心載入失敗，請回到主網址重新整理。</p>",
+                { status: 503, headers: { "Content-Type": "text/html; charset=utf-8" } },
+              );
+            }));
           });
           EOF
 
@@ -234,7 +253,7 @@ jobs:
             <main>
               <div class="spinner" id="spinner"></div>
               <h1 id="status">正在準備 DoLP v0.768…</h1>
-              <p id="detail">Aoki+Mysterious · ModLoader，第一次開啟可能需要幾秒。</p>
+              <p id="detail">Aoki+Mysterious · ModLoader · 同站圖片版</p>
               <div class="actions" id="actions" hidden><button id="retry" type="button">重新載入</button></div>
             </main>
             <noscript>此遊戲需要 JavaScript。</noscript>
@@ -316,11 +335,12 @@ jobs:
           touch /tmp/dolp-site/.nojekyll
 
           cat > /tmp/dolp-site/build-info.json <<EOF
-          {"core":"0.5.11.9 DoLP v0.768","artPack":"aokiutage_mys","build":"${BUILD_ID}","sourceSha256":"ebda02401b169579b30bfd3796e685e60bee23d46ee06f61548c5e7f0f2108ef","compressedBytes":${COMPRESSED},"uncompressedBytes":${UNCOMPRESSED},"imageMapBytes":${MAP_BYTES}}
+          {"core":"0.5.11.9 DoLP v0.768","artPack":"aokiutage_mys","build":"${BUILD_ID}","sourceSha256":"ebda02401b169579b30bfd3796e685e60bee23d46ee06f61548c5e7f0f2108ef","compressedBytes":${COMPRESSED},"uncompressedBytes":${UNCOMPRESSED},"imageMode":"same-origin-static","imageCount":${IMAGE_COUNT},"imageBytes":${IMAGE_BYTES}}
           EOF
 
           echo "BUILD_ID=$BUILD_ID"
-          find /tmp/dolp-site -maxdepth 2 -type f -printf '%P %s bytes\n' | sort
+          echo "IMAGE_COUNT=$IMAGE_COUNT"
+          echo "IMAGE_BYTES=$IMAGE_BYTES"
 
       - name: Publish generated site to gh-pages branch
         shell: bash
@@ -332,5 +352,5 @@ jobs:
           git rm -rf . >/dev/null 2>&1 || true
           cp -a /tmp/dolp-site/. .
           git add -A
-          git commit -m "Deploy DoLP v0.768 Aoki+Mysterious ModLoader site"
+          git commit -m "Deploy DoLP v0.768 Aoki+Mysterious static-image site"
           git push --force origin HEAD:gh-pages
