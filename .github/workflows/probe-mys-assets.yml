@@ -1,0 +1,43 @@
+name: Probe Aoki Mysterious asset paths
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/probe-mys-assets.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Inspect live Aoki+Mysterious HTML and image routing
+        shell: bash
+        run: |
+          set -euo pipefail
+          GAME='https://dolp.dolmods.net/aokimyst/'
+          curl -fL --max-time 120 -A 'Mozilla/5.0' "$GAME" -o mys.html
+          echo "game_bytes=$(wc -c < mys.html)"
+          echo '--- base tags ---'
+          grep -aoiE '<base[^>]*>' mys.html | head -20 || true
+          echo '--- card-logo contexts ---'
+          grep -aon -m 5 -C 1 'card-logo.png' mys.html || true
+          echo '--- first literal image refs ---'
+          grep -aoE 'https?://[^"'"'"'<> )]+\.(png|gif|webp|jpg|jpeg)' mys.html | sort -u | head -100 || true
+          echo '--- first relative img refs ---'
+          grep -aoE '(\.\./|\./|/)?img/[A-Za-z0-9_./${}-]+\.(png|gif|webp|jpg|jpeg)' mys.html | sort -u | head -100 || true
+
+          echo '--- HEAD tests for known file ---'
+          for URL in \
+            'https://dolp.dolmods.net/aokimyst/img/ui/card-logo.png' \
+            'https://dolp.dolmods.net/img/ui/card-logo.png' \
+            'https://dolp.dolmods.net/aokimyst/img/body/base-classic.png' \
+            'https://dolp.dolmods.net/img/body/base-classic.png' \
+            'https://dolmods.net/dolp/aokimyst/img/ui/card-logo.png' \
+            'https://beta.dolmods.net/dolp/aokimyst/img/ui/card-logo.png'; do
+            echo "=== $URL ==="
+            curl -L -sS -o /dev/null -w 'HTTP=%{http_code} TYPE=%{content_type} SIZE=%{size_download} FINAL=%{url_effective}\n' "$URL" || true
+          done
