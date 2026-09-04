@@ -1,0 +1,112 @@
+name: Reconstruct exact user v0.772 ModLoader HTML
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/probe-reconstruct-exact772.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  reconstruct:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Download official v0.772 Aoki MYS and source tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fL --retry 3 --max-time 300 -A 'Mozilla/5.0 (GitHub Actions)'             'https://dolp.download/DoLP_aoki_utage_mys/v0.772/DoLP_aoki_utage_mys_v0.772.zip'             -o official.zip
+          mkdir official
+          unzip -q official.zip -d official
+          BASE=$(find official -type f -name 'Degrees of Lewdity*.html' | head -n1)
+          test -n "$BASE"
+          cp "$BASE" official-base.html
+
+          API='https://gitgud.io/api/v4/projects/Frostberg%2Fdegrees-of-lewdity-plus'
+          curl -fL --retry 2 --max-time 180 -A 'Mozilla/5.0'             "$API/repository/archive.tar.gz?sha=v0.772" -o source.tar.gz
+          mkdir source
+          tar -xzf source.tar.gz -C source --strip-components=1
+          test -s source/dist-insertTools/sc2PatchTool.js
+
+      - name: Run the bundled v0.772 sc2PatchTool
+        shell: bash
+        run: |
+          set -euo pipefail
+          node source/dist-insertTools/sc2PatchTool.js official-base.html
+          test -s official-base.html.sc2patch.html
+          echo "patched_bytes=$(wc -c < official-base.html.sc2patch.html)"
+          echo "patched_sha256=$(sha256sum official-base.html.sc2patch.html | awk '{print $1}')"
+          echo "expected_bytes=54057021"
+          echo "expected_sha256=db22e9d374172de76a8788c3e338349326cfdfb9e46792bf6820155496c7a7be"
+          test "$(wc -c < official-base.html.sc2patch.html)" = "54057021"
+          test "$(sha256sum official-base.html.sc2patch.html | awk '{print $1}')" = "db22e9d374172de76a8788c3e338349326cfdfb9e46792bf6820155496c7a7be"
+          echo 'SC2PATCH_EXACT_MATCH=YES'
+
+      - name: Extract exact Loader blocks from known-good v0.768
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fL --retry 3 --max-time 180 -A 'Mozilla/5.0 (GitHub Actions)'             'https://dolp-aoki-modloader.yfei2304.chatgpt.site/payload/game-v0768.bundle'             -o exact768.gz
+          gzip -dc exact768.gz > exact768.html
+          test "$(wc -c < exact768.html)" = "67147773"
+          test "$(sha256sum exact768.html | awk '{print $1}')" = "ebda02401b169579b30bfd3796e685e60bee23d46ee06f61548c5e7f0f2108ef"
+
+          python3 - <<'PY'
+          from pathlib import Path
+          import hashlib
+          s=Path('exact768.html').read_text('utf-8')
+          first=s.find('<script')
+          if first < 0: raise SystemExit('first script not found')
+          end1=s.find('</script>', first)
+          if end1 < 0: raise SystemExit('end script1 not found')
+          end1 += len('</script>')
+          second=s.find('<script', end1)
+          if second < 0: raise SystemExit('second script not found')
+          end2=s.find('</script>', second)
+          if end2 < 0: raise SystemExit('end script2 not found')
+          end2 += len('</script>')
+          script1=s[first:end1]
+          script2=s[second:end2]
+          if 'window.modDataValueZipList' not in script1:
+              raise SystemExit('script1 is not modDataValueZipList')
+          if 'modSC2DataManager' not in script2:
+              raise SystemExit('script2 is not BeforeSC2')
+          Path('loader1.txt').write_text(script1,'utf-8')
+          Path('loader2.txt').write_text(script2,'utf-8')
+          for n,x in [('loader1',script1),('loader2',script2)]:
+              print(n,'bytes=',len(x.encode()),'sha256=',hashlib.sha256(x.encode()).hexdigest())
+          PY
+
+      - name: Inject exact Loader blocks into patched official v0.772
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import hashlib
+          base=Path('official-base.html.sc2patch.html').read_text('utf-8')
+          one=Path('loader1.txt').read_text('utf-8')
+          two=Path('loader2.txt').read_text('utf-8')
+          idx=base.find('<script')
+          if idx < 0: raise SystemExit('base first script not found')
+          final=base[:idx] + '\n' + one + '\n' + two + '\n' + base[idx:]
+          Path('exact-v0772-reconstructed.html').write_text(final,'utf-8')
+          b=final.encode()
+          print('final_bytes=',len(b))
+          print('final_sha256=',hashlib.sha256(b).hexdigest())
+          PY
+          test "$(wc -c < exact-v0772-reconstructed.html)" = "68512914"
+          test "$(sha256sum exact-v0772-reconstructed.html | awk '{print $1}')" = "6e792d8fd8992e74df8906b091495abc61582602e8d88eb6b32680e94635ef8d"
+          echo 'EXACT_USER_V0772_MATCH=YES'
+
+      - name: Upload reconstructed exact core
+        uses: actions/upload-artifact@v4
+        with:
+          name: exact-v0772-reconstructed
+          path: exact-v0772-reconstructed.html
+          compression-level: 9
+          retention-days: 1
