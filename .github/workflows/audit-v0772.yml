@@ -1,0 +1,282 @@
+name: Audit live DoLP v0.772 site
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/audit-v0772.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  manifest-audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout gh-pages branch
+        uses: actions/checkout@v4
+        with:
+          ref: gh-pages
+          path: live-tree
+
+      - name: Download official v0.772 Aoki MYS package
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fL --retry 3 --max-time 300             -A 'Mozilla/5.0 (GitHub Actions v0.772 auditor)'             'https://dolp.download/DoLP_aoki_utage_mys/v0.772/DoLP_aoki_utage_mys_v0.772.zip'             -o official.zip
+          test "$(wc -c < official.zip)" = '120493476'
+          test "$(sha256sum official.zip | awk '{print $1}')" = '27227b0fa2f56e4cf2b4b8cacbc908ba2f0904f7a7b745b21b87e056dd7daf32'
+          mkdir official
+          unzip -q official.zip -d official
+
+      - name: Compare every published image byte-for-byte with official package
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import hashlib, sys
+
+          off_html=next(Path('official').rglob('Degrees of Lewdity*.html'))
+          off_root=off_html.parent/'img'
+          live_root=Path('live-tree/img')
+
+          def manifest(root):
+              out={}
+              for p in root.rglob('*'):
+                  if p.is_file():
+                      rel=p.relative_to(root).as_posix()
+                      h=hashlib.sha256()
+                      with p.open('rb') as f:
+                          for chunk in iter(lambda:f.read(1024*1024),b''):
+                              h.update(chunk)
+                      out[rel]=(p.stat().st_size,h.hexdigest())
+              return out
+
+          off=manifest(off_root)
+          live=manifest(live_root)
+          print('official_count=',len(off))
+          print('published_count=',len(live))
+          print('official_bytes=',sum(v[0] for v in off.values()))
+          print('published_bytes=',sum(v[0] for v in live.values()))
+
+          only_off=sorted(set(off)-set(live))
+          only_live=sorted(set(live)-set(off))
+          mismatch=sorted(k for k in set(off)&set(live) if off[k]!=live[k])
+
+          print('missing_from_published=',len(only_off))
+          print('extra_in_published=',len(only_live))
+          print('byte_mismatch=',len(mismatch))
+          for label,items in [('missing',only_off),('extra',only_live),('mismatch',mismatch)]:
+              for x in items[:30]:
+                  print(label,x, 'official=',off.get(x),'published=',live.get(x))
+
+          if len(off)!=30917 or len(live)!=30917 or only_off or only_live or mismatch:
+              raise SystemExit('IMAGE_MANIFEST_AUDIT_FAILED')
+          print('IMAGE_MANIFEST_AUDIT=PASS')
+          PY
+
+      - name: Audit published site structure
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s live-tree/payload/game-v0772.bundle
+          test -s live-tree/index.html
+          test -s live-tree/game-v0772.html
+          test -s live-tree/sw.js
+          test -s live-tree/pako_inflate.min.js
+          test -s live-tree/build-info.json
+
+          if [ -e live-tree/game-v0768.html ]; then
+            echo 'STALE_0768_ROUTE_PRESENT'
+            exit 1
+          fi
+          if [ -e live-tree/payload/game-v0768.bundle ]; then
+            echo 'STALE_0768_BUNDLE_PRESENT'
+            exit 1
+          fi
+
+          python3 - <<'PY'
+          import json
+          d=json.load(open('live-tree/build-info.json'))
+          print('build_info=',d)
+          assert d['core']=='0.5.12.6 DoLP v0.772'
+          assert d['artPack']=='aokiutage_mys_v0.772'
+          assert d['sourceSha256']=='6e792d8fd8992e74df8906b091495abc61582602e8d88eb6b32680e94635ef8d'
+          assert d['imageCount']==30917
+          assert d['imageMode']=='official-same-origin-static'
+          PY
+          echo 'PUBLISHED_STRUCTURE_AUDIT=PASS'
+
+  browser-audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 18
+    steps:
+      - name: Locate Chrome and install Playwright core
+        id: setup
+        shell: bash
+        run: |
+          set -euo pipefail
+          CHROME=''
+          for p in /usr/bin/google-chrome /usr/bin/google-chrome-stable /usr/bin/chromium /usr/bin/chromium-browser; do
+            if [ -x "$p" ]; then CHROME="$p"; break; fi
+          done
+          test -n "$CHROME"
+          echo "chrome=$CHROME" >> "$GITHUB_OUTPUT"
+          "$CHROME" --version
+          mkdir /tmp/browser-audit
+          cd /tmp/browser-audit
+          npm init -y >/dev/null 2>&1
+          npm install --silent playwright-core@1.59.1
+
+      - name: Run network, runtime and broken-image audit in real Chrome
+        env:
+          CHROME_PATH: ${{ steps.setup.outputs.chrome }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd /tmp/browser-audit
+          cat > audit.js <<'JS'
+          const { chromium } = require('playwright-core');
+
+          (async () => {
+            const root='https://yfei2304-dotcom.github.io/dolp-aoki-mys-modloader/';
+            const browser=await chromium.launch({
+              headless:true,
+              executablePath:process.env.CHROME_PATH,
+              args:['--no-sandbox','--disable-dev-shm-usage'],
+            });
+            const context=await browser.newContext({serviceWorkers:'allow'});
+            const page=await context.newPage();
+
+            const badResponses=[];
+            const failedRequests=[];
+            const pageErrors=[];
+            const consoleErrors=[];
+            const imageResponses=new Map();
+
+            page.on('response', async r => {
+              const status=r.status();
+              const url=r.url();
+              const req=r.request();
+              if (status >= 400) badResponses.push({status,url,type:req.resourceType()});
+              if (req.resourceType()==='image') imageResponses.set(url,status);
+            });
+            page.on('requestfailed', r => failedRequests.push({
+              url:r.url(), type:r.resourceType(), error:r.failure()?.errorText || null
+            }));
+            page.on('pageerror', e => pageErrors.push(String(e)));
+            page.on('console', m => {
+              if (m.type()==='error') consoleErrors.push(m.text());
+            });
+
+            await page.goto(root,{waitUntil:'domcontentloaded',timeout:120000});
+            await page.waitForURL(u=>u.pathname.endsWith('/game-v0772.html'),{timeout:120000});
+            await page.waitForFunction(() =>
+              Array.isArray(window.modDataValueZipList) &&
+              window.modDataValueZipList.length===23 &&
+              typeof window.modSC2DataManager!=='undefined' &&
+              typeof window.modUtils!=='undefined',
+              null,{timeout:120000}
+            );
+
+            await page.waitForTimeout(8000);
+
+            const state=await page.evaluate(async () => {
+              const reg=await navigator.serviceWorker.getRegistration();
+              const imgs=[...document.images].map(i=>({
+                src:i.currentSrc||i.src,
+                complete:i.complete,
+                naturalWidth:i.naturalWidth,
+                naturalHeight:i.naturalHeight
+              }));
+              const broken=imgs.filter(i=>i.complete && i.naturalWidth===0);
+              const perf=performance.getEntriesByType('resource').map(e=>({
+                name:e.name,
+                initiatorType:e.initiatorType,
+                transferSize:e.transferSize,
+                decodedBodySize:e.decodedBodySize
+              }));
+              return {
+                href:location.href,
+                title:document.title,
+                controlled:!!navigator.serviceWorker.controller,
+                controllerScript:navigator.serviceWorker.controller?.scriptURL||null,
+                activeWorker:reg?.active?.scriptURL||null,
+                modZipCount:Array.isArray(window.modDataValueZipList)?window.modDataValueZipList.length:null,
+                hasModManager:typeof window.modSC2DataManager!=='undefined',
+                hasModUtils:typeof window.modUtils!=='undefined',
+                imageElements:imgs.length,
+                brokenImages:broken,
+                resourceCount:perf.length,
+                bodyTextSample:(document.body?.innerText||'').slice(0,1200),
+              };
+            });
+
+            const meaningful404=badResponses.filter(x => {
+              try {
+                const u=new URL(x.url);
+                return !(x.status===404 && u.pathname.endsWith('/favicon.ico'));
+              } catch { return true; }
+            });
+
+            console.log('BROWSER_STATE='+JSON.stringify(state));
+            console.log('BAD_RESPONSES='+JSON.stringify(badResponses));
+            console.log('MEANINGFUL_BAD_RESPONSES='+JSON.stringify(meaningful404));
+            console.log('FAILED_REQUESTS='+JSON.stringify(failedRequests));
+            console.log('PAGE_ERRORS='+JSON.stringify(pageErrors));
+            console.log('CONSOLE_ERRORS='+JSON.stringify(consoleErrors.slice(0,100)));
+            console.log('IMAGE_RESPONSE_COUNT='+imageResponses.size);
+
+            if (!state.controlled) throw new Error('Not controlled by Service Worker');
+            if (!state.controllerScript?.includes('/sw.js?build=mys772-c915efd39e0e')) throw new Error('Unexpected Service Worker build');
+            if (state.modZipCount!==23) throw new Error('Embedded mod zip count mismatch');
+            if (!state.hasModManager || !state.hasModUtils) throw new Error('ModLoader globals missing');
+            if (!state.title.includes('Degrees of Lewdity Plus')) throw new Error('Unexpected game title');
+            if (state.brokenImages.length) throw new Error('Broken DOM images: '+JSON.stringify(state.brokenImages.slice(0,20)));
+            if (meaningful404.length) throw new Error('HTTP 4xx/5xx responses: '+JSON.stringify(meaningful404.slice(0,20)));
+            if (failedRequests.length) throw new Error('Network request failures: '+JSON.stringify(failedRequests.slice(0,20)));
+            if (pageErrors.length) throw new Error('Page errors: '+JSON.stringify(pageErrors.slice(0,20)));
+
+            await browser.close();
+            console.log('BROWSER_NETWORK_RUNTIME_AUDIT=PASS');
+          })().catch(e=>{ console.error(e); process.exit(1); });
+          JS
+          node audit.js
+
+  public-sample-audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - name: Probe public Pages paths with spaces and representative assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import urllib.request, hashlib, json
+          base='https://yfei2304-dotcom.github.io/dolp-aoki-mys-modloader/'
+          expected={
+            'build-info.json': None,
+            'img/hair/fringe/swept%20left/chest.png': '4d643cd9f6a9b7a923117bc873900e1534f33379fce1db96aed4b84544eaf5c5',
+            'img/misc/fishing-minigame/sweat-1.png':'a33037af9225e5764975d78591ce40b30997158d31c7d1b9009523535ee60895',
+            'img/misc/sky/stars/star-2.png':'5cce9d89b26562c37f07f1575627b48f518cb2a56b1113807d2c30ed53bf5ab1',
+            'img/misc/locations/banner/ice.png':'227d31bae00dc2c6daa901c98afe3236415db589cb772d47da04759f75381f42',
+          }
+          for path,sha_expected in expected.items():
+              req=urllib.request.Request(base+path,headers={'User-Agent':'Mozilla/5.0 GitHub-Actions-audit'})
+              with urllib.request.urlopen(req,timeout=60) as r:
+                  data=r.read()
+                  print(path,'status=',r.status,'bytes=',len(data),'type=',r.headers.get('content-type'))
+              if sha_expected:
+                  sha=hashlib.sha256(data).hexdigest()
+                  print(path,'sha256=',sha)
+                  if sha!=sha_expected: raise SystemExit('SHA mismatch '+path)
+
+          with urllib.request.urlopen(base+'build-info.json?audit=1',timeout=60) as r:
+              info=json.load(r)
+          if info.get('core')!='0.5.12.6 DoLP v0.772': raise SystemExit('wrong live core')
+          if info.get('imageCount')!=30917: raise SystemExit('wrong live image count')
+          print('PUBLIC_SAMPLE_AUDIT=PASS')
+          PY
