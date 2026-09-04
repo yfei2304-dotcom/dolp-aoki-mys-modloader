@@ -1,0 +1,63 @@
+name: Probe missing upstream v0.772 assets
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/probe-missing-upstream-assets.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - name: Query tags and probe imagepack raw files
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE='https://gitgud.io/api/v4/projects/Frostberg%2Fdegrees-of-lewdity-plus'
+          curl -fLsS --retry 2 --max-time 60 "$BASE/repository/tags?per_page=20" -o tags.json
+          echo '=== recent tags ==='
+          python3 - <<'PY'
+          import json
+          for t in json.load(open('tags.json'))[:20]:
+              print(t.get('name'), t.get('commit',{}).get('id'))
+          PY
+
+          python3 - <<'PY'
+          import json, urllib.parse, subprocess, os
+          tags=[t.get('name') for t in json.load(open('tags.json')) if t.get('name')]
+          wanted=['v0.772']
+          for cand in ['v0.773','v0.774','v0.775','v0.776','v0.777']:
+              if cand in tags: wanted.append(cand)
+          wanted.append('master')
+
+          packs=['vanilla','dolp','au','mysterious','aoki_utage','aokiutage']
+          files=[
+              'ui/wolf-harmony.png',
+              'sex/machine/vaginal/xray_vaginal.png',
+          ]
+          base='https://gitgud.io/Frostberg/degrees-of-lewdity-plus/-/raw/{ref}/imagepacks/{pack}/{path}'
+          found=[]
+          for ref in wanted:
+              for pack in packs:
+                  for path in files:
+                      url=base.format(ref=urllib.parse.quote(ref,safe=''),pack=pack,path=urllib.parse.quote(path,safe='/'))
+                      out='/tmp/probe.bin'
+                      p=subprocess.run(['curl','-LsS','--max-time','30','-o',out,'-w','%{http_code}',url],capture_output=True,text=True)
+                      code=p.stdout.strip()
+                      size=os.path.getsize(out) if os.path.exists(out) else 0
+                      if code=='200' and size>0:
+                          import hashlib
+                          data=open(out,'rb').read()
+                          sha=hashlib.sha256(data).hexdigest()
+                          print('FOUND',ref,pack,path,'bytes=',len(data),'sha256=',sha,'url=',url)
+                          found.append((ref,pack,path,len(data),sha))
+                      elif code not in ('404','000'):
+                          print('STATUS',ref,pack,path,code,size)
+          print('found_count=',len(found))
+          PY
