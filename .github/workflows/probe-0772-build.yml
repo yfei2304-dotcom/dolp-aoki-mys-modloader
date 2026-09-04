@@ -1,0 +1,33 @@
+name: Inspect DoLP v0.772 build system
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/probe-0772-build.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Clone exact v0.772 source
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --depth 1 --branch v0.772 https://gitgud.io/Frostberg/degrees-of-lewdity-plus.git upstream
+          cd upstream
+          echo "HEAD=$(git rev-parse HEAD)"
+          echo '--- root ---'
+          ls -lah | head -n 120
+          echo '--- package/build files ---'
+          find . -maxdepth 3 -type f \( -name 'package.json' -o -name 'package-lock.json' -o -name 'yarn.lock' -o -name 'pnpm-lock.yaml' -o -name 'gulpfile*' -o -name 'webpack.config*' -o -name 'README*' -o -name 'build*' \) -print | head -n 200
+          echo '--- package.json ---'
+          if [ -f package.json ]; then cat package.json; fi
+          echo '--- html files ---'
+          find . -type f -name '*.html' -printf '%s %p\n' | sort -nr | head -n 30
+          echo '--- likely build docs ---'
+          grep -RniE 'npm (run )?build|yarn build|compile|Tweego|tweego|build.*html|dist/' README* docs* .gitlab-ci.yml package.json 2>/dev/null | head -n 200 || true
