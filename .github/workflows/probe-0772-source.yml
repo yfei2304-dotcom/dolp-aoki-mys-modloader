@@ -1,0 +1,33 @@
+name: Probe DoLP v0.772 online source
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/probe-0772-source.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Inspect DOLMods Aoki+Mysterious endpoints
+        shell: bash
+        run: |
+          set +e
+          UA='Mozilla/5.0 (GitHub Actions DoLP v0772 probe)'
+          for URL in             'https://dolp.dolmods.net/aokimyst/'             'https://dolp.dolmods.net/aokimyst/sw.js'             'https://dolp.dolmods.net/sw.js'             'https://dolp.dolmods.net/aokimyst/game.html'             'https://dolp.dolmods.net/aokimyst/index.html'; do
+            echo
+            echo "===== $URL ====="
+            curl -L --max-time 120 -A "$UA" -sS -D headers.txt -o body.bin -w 'HTTP=%{http_code} SIZE=%{size_download} FINAL=%{url_effective}\n' "$URL"
+            grep -iE '^(content-type:|content-length:|content-encoding:|etag:|location:|cache-control:)' headers.txt || true
+            file body.bin || true
+            echo '--- strings of interest ---'
+            strings -n 8 body.bin | grep -aEi '0\.5\.|v0\.77|bundle|payload|service.?worker|img\.json|\.gz|\.html' | head -n 80 || true
+            echo '--- first 600 bytes ---'
+            head -c 600 body.bin | tr '\n' ' ' || true
+            echo
+          done
