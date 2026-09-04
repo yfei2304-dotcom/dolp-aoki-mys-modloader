@@ -1,0 +1,59 @@
+name: Probe DoLP v0.772 release assets
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/probe-release-772.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - name: Query project, release and exact Aoki MYS recipe
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE='https://gitgud.io/api/v4/projects/Frostberg%2Fdegrees-of-lewdity-plus'
+          curl -fLsS --retry 2 --max-time 60 "$BASE" -o project.json
+          python3 - <<'PY'
+          import json
+          p=json.load(open('project.json'))
+          print('project_id=',p.get('id'))
+          print('web_url=',p.get('web_url'))
+          print('default_branch=',p.get('default_branch'))
+          PY
+
+          echo '=== RELEASE v0.772 ==='
+          code=$(curl -LsS --max-time 60 -o release.json -w '%{http_code}' "$BASE/releases/v0.772")
+          echo "release_http=$code"
+          if [ "$code" = 200 ]; then
+            python3 - <<'PY'
+          import json
+          r=json.load(open('release.json'))
+          print('name=',r.get('name'))
+          print('tag=',r.get('tag_name'))
+          print('released_at=',r.get('released_at'))
+          print('assets:')
+          for x in r.get('assets',{}).get('links',[]):
+              print(x.get('name'),'\t',x.get('url'),'\t',x.get('direct_asset_url'))
+          PY
+          else
+            head -c 1000 release.json || true
+          fi
+
+          echo '=== RAW CI AOKI MYS BLOCK ==='
+          ENC_PATH=$(python3 -c 'import urllib.parse; print(urllib.parse.quote(".gitlab-ci.yml",safe=""))')
+          curl -fLsS --retry 2 --max-time 60 "$BASE/repository/files/$ENC_PATH/raw?ref=v0.772" -o ci.yml
+          awk '/^build_upload_au_mys_job:/{flag=1} flag{print} flag && /^    only:/{getline; print; exit}' ci.yml
+
+          echo '=== PACKAGE REGISTRY LEGACY URL TEST ==='
+          PID=$(python3 -c 'import json; print(json.load(open("project.json"))["id"])')
+          URL="https://gitgud.io/api/v4/projects/$PID/packages/generic/DoLP_aoki_utage_mys/v0.772/DoLP_aoki_utage_mys_v0.772.zip"
+          echo "$URL"
+          curl -ILsS --max-time 60 "$URL" | sed -n '1,20p' || true
