@@ -1,0 +1,85 @@
+name: Reproduce v0.772 cleanly
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/probe-0772-clean.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  reproduce:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Clone exact source
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --depth 1 --branch v0.772 https://gitgud.io/Frostberg/degrees-of-lewdity-plus.git upstream
+          cd upstream
+          test "$(git rev-parse HEAD)" = "8c26c694e62752bf1e2bbb8eb4e1a1e1cc45f5fb"
+          ls -l devTools/tweego/tweego_linux64
+          file devTools/tweego/tweego_linux64
+          chmod +x devTools/tweego/tweego_linux64 compile.sh
+
+      - name: Compile exact v0.772 base
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd upstream
+          find ./version -type f -exec sed -i 's/DoLP version/DoLP v0.772/g' {} +
+          find ./devTools/apkbuilder/config.xml -type f -exec sed -i 's/DoLP version/DoLP v0.772/g' {} + || true
+          find ./game/01-config/sugarcubeConfig.js -type f -exec sed -i 's/DoLP version/DoLP v0.772/g' {} +
+          FORCE_VERSION='' sh ./compile.sh
+          BASE='Degrees of Lewdity.html'
+          test -s "$BASE"
+          echo "base_size=$(wc -c < "$BASE")"
+          echo "base_sha=$(sha256sum "$BASE" | awk '{print $1}')"
+          echo "base_version_count=$(grep -ao '0.5.12.6 DoLP v0.772' "$BASE" | wc -l || true)"
+          echo "base_modData_count=$(grep -ao 'window.modDataValueZipList' "$BASE" | wc -l || true)"
+
+      - name: Run upstream ModLoader injector
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd upstream
+          BASE='Degrees of Lewdity.html'
+          echo "insert_tool_size=$(wc -c < dist-insertTools/insert2html.cjs)"
+          echo "before_sc2_size=$(wc -c < dist-BeforeSC2/BeforeSC2.js)"
+          echo "mod_list_size=$(wc -c < modList.json)"
+          node dist-insertTools/insert2html.cjs "$BASE" modList.json dist-BeforeSC2/BeforeSC2.js
+          CAND="$BASE.mod.html"
+          test -s "$CAND"
+          echo "candidate_size=$(wc -c < "$CAND")"
+          echo "candidate_sha=$(sha256sum "$CAND" | awk '{print $1}')"
+          echo "candidate_version_count=$(grep -ao '0.5.12.6 DoLP v0.772' "$CAND" | wc -l || true)"
+          echo "candidate_modData_count=$(grep -ao 'window.modDataValueZipList' "$CAND" | wc -l || true)"
+          echo "candidate_BeforeSC2_count=$(grep -ao 'BeforeSC2' "$CAND" | wc -l || true)"
+          echo 'expected_user_size=68512914'
+          echo 'expected_user_sha=6e792d8fd8992e74df8906b091495abc61582602e8d88eb6b32680e94635ef8d'
+
+      - name: Assemble official v0.772 Aoki MYS
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd upstream
+          mkdir -p /tmp/aoki-mys/img
+          cp -a imagepacks/vanilla/. /tmp/aoki-mys/img/
+          cp -a imagepacks/dolp/. /tmp/aoki-mys/img/
+          cp -a imagepacks/au/. /tmp/aoki-mys/img/
+          cp -a imagepacks/mysterious/. /tmp/aoki-mys/img/
+          echo "merged_files=$(find /tmp/aoki-mys/img -type f | wc -l)"
+          echo "merged_png=$(find /tmp/aoki-mys/img -type f -iname '*.png' | wc -l)"
+          echo "merged_bytes=$(du -sb /tmp/aoki-mys/img | awk '{print $1}')"
+          for P in             'hair/fringe/swept left/chest.png'             'body/base-classic.png'             'ui/card-logo.png'             'misc/fishing-minigame/sweat-1.png'             'misc/fishing-minigame/sweat-2.png'             'misc/fishing-minigame/sweat-3.png'; do
+            F="/tmp/aoki-mys/img/$P"
+            if [ -f "$F" ]; then
+              echo "$P bytes=$(wc -c < "$F") sha=$(sha256sum "$F" | awk '{print $1}')"
+            else
+              echo "$P MISSING"
+            fi
+          done
