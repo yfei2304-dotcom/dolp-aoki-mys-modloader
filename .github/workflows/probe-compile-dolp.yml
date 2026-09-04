@@ -1,0 +1,49 @@
+name: Probe compile DoLP tags
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/probe-compile-dolp.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    strategy:
+      matrix:
+        tag: [v0.768, v0.772]
+    steps:
+      - name: Download tag and inspect compiler
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG='${{ matrix.tag }}'
+          API='https://gitgud.io/api/v4/projects/Frostberg%2Fdegrees-of-lewdity-plus'
+          ENC=$(python3 -c 'import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1],safe=""))' "$TAG")
+          curl -fL --retry 2 --max-time 180 -A 'Mozilla/5.0'             "$API/repository/archive.tar.gz?sha=$ENC" -o src.tar.gz
+          mkdir src
+          tar -xzf src.tar.gz -C src --strip-components=1
+          echo "=== $TAG compile.sh ==="
+          sed -n '1,260p' src/compile.sh
+          echo '=== tweego candidates ==='
+          find src -type f \( -iname 'tweego*' -o -iname '*sugarcube*' \) -printf '%s %p\n' | sort -nr | head -n 80
+
+      - name: Compile upstream HTML
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG='${{ matrix.tag }}'
+          cd src
+          chmod +x compile.sh || true
+          ./compile.sh
+          echo '=== output HTML ==='
+          find . -maxdepth 2 -type f -name 'Degrees of Lewdity*.html' -printf '%s %p\n'
+          OUT=$(find . -maxdepth 2 -type f -name 'Degrees of Lewdity*.html' | head -n1)
+          test -n "$OUT"
+          sha256sum "$OUT"
+          grep -aoE '0\.5\.[0-9.]+ DoLP v0\.[0-9]+' "$OUT" | head
