@@ -34,7 +34,7 @@ jobs:
           find ./version -type f -exec sed -i 's/DoLP version/DoLP v0.772/g' {} +
           find ./devTools/apkbuilder/config.xml -type f -exec sed -i 's/DoLP version/DoLP v0.772/g' {} + || true
           find ./game/01-config/sugarcubeConfig.js -type f -exec sed -i 's/DoLP version/DoLP v0.772/g' {} +
-          FORCE_VERSION='' sh ./compile.sh
+          FORCE_VERSION='' bash ./compile.sh
           BASE='Degrees of Lewdity.html'
           test -s "$BASE"
           echo "base_size=$(wc -c < "$BASE")"
