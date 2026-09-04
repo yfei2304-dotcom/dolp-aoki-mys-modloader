@@ -13,12 +13,13 @@ permissions:
 jobs:
   probe:
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 30
     strategy:
+      fail-fast: false
       matrix:
         tag: [v0.768, v0.772]
     steps:
-      - name: Download tag and inspect compiler
+      - name: Download and compile upstream tag
         shell: bash
         run: |
           set -euo pipefail
@@ -28,22 +29,21 @@ jobs:
           curl -fL --retry 2 --max-time 180 -A 'Mozilla/5.0'             "$API/repository/archive.tar.gz?sha=$ENC" -o src.tar.gz
           mkdir src
           tar -xzf src.tar.gz -C src --strip-components=1
-          echo "=== $TAG compile.sh ==="
-          sed -n '1,260p' src/compile.sh
-          echo '=== tweego candidates ==='
-          find src -type f \( -iname 'tweego*' -o -iname '*sugarcube*' \) -printf '%s %p\n' | sort -nr | head -n 80
-
-      - name: Compile upstream HTML
-        shell: bash
-        run: |
-          set -euo pipefail
-          TAG='${{ matrix.tag }}'
           cd src
-          chmod +x compile.sh || true
-          ./compile.sh
-          echo '=== output HTML ==='
-          find . -maxdepth 2 -type f -name 'Degrees of Lewdity*.html' -printf '%s %p\n'
-          OUT=$(find . -maxdepth 2 -type f -name 'Degrees of Lewdity*.html' | head -n1)
+          chmod +x compile.sh devTools/tweego/tweego_linux64 || true
+          FORCE_VERSION="$TAG" ./compile.sh
+          OUT=$(find . -maxdepth 2 -type f -name 'Degrees of Lewdity*.html' ! -type l | head -n1)
           test -n "$OUT"
-          sha256sum "$OUT"
-          grep -aoE '0\.5\.[0-9.]+ DoLP v0\.[0-9]+' "$OUT" | head
+          cp "$OUT" "../pure-${TAG}.html"
+          echo "tag=$TAG"
+          echo "bytes=$(wc -c < "../pure-${TAG}.html")"
+          sha256sum "../pure-${TAG}.html"
+          grep -aoE '0\.5\.[0-9.]+ DoLP v0\.[0-9]+' "../pure-${TAG}.html" | head || true
+
+      - name: Upload pure compiled HTML
+        uses: actions/upload-artifact@v4
+        with:
+          name: pure-${{ matrix.tag }}
+          path: pure-${{ matrix.tag }}.html
+          compression-level: 9
+          retention-days: 1
