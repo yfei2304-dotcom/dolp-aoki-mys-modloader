@@ -1,0 +1,36 @@
+name: Probe DoLP v0.772 packaging
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/probe-dolp-packaging.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Inspect packaging and minification paths
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG='v0.772'
+          API='https://gitgud.io/api/v4/projects/Frostberg%2Fdegrees-of-lewdity-plus'
+          ENC=$(python3 -c 'import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1],safe=""))' "$TAG")
+          curl -fL --retry 2 --max-time 180 -A 'Mozilla/5.0' "$API/repository/archive.tar.gz?sha=$ENC" -o src.tar.gz
+          mkdir src
+          tar -xzf src.tar.gz -C src --strip-components=1
+
+          echo '=== .gitlab-ci.yml ==='
+          sed -n '1,360p' src/.gitlab-ci.yml
+
+          echo '=== files matching insert/minify/html tools ==='
+          find src -type f | grep -Ei 'insert2html|insert.*html|minif|html.*min|beforeSC2|modloader' | head -n 200 || true
+
+          echo '=== grep packaging keywords ==='
+          grep -RInE --exclude='*.map' --exclude='*.png' --exclude='*.jpg' --exclude='*.gif'             'html-minifier|htmlmin|minify|collapseWhitespace|removeAttributeQuotes|modDataValueZipList|insert2html|BeforeSC2'             src 2>/dev/null | head -n 300 || true
