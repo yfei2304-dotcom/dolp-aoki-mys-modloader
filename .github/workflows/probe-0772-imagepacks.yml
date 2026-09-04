@@ -1,0 +1,47 @@
+name: Inspect v0.772 imagepacks and compile
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/probe-0772-imagepacks.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Clone exact v0.772 and inspect
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --depth 1 --branch v0.772 https://gitgud.io/Frostberg/degrees-of-lewdity-plus.git upstream
+          cd upstream
+          echo "HEAD=$(git rev-parse HEAD)"
+
+          echo '--- compile.sh ---'
+          sed -n '1,260p' compile.sh
+
+          echo '--- CI setup / html build ---'
+          sed -n '1,180p' .gitlab-ci.yml
+          echo '--- CI html-only job neighborhood ---'
+          sed -n '470,530p' .gitlab-ci.yml
+
+          echo '--- imagepack directories ---'
+          find imagepacks -maxdepth 2 -type d -print | sort | head -n 300
+
+          echo '--- aoki/myst references ---'
+          grep -RniE 'aoki|myster|aokimyst|myst' imagepacks .gitlab-ci.yml README.md compile.sh 2>/dev/null | head -n 300 || true
+
+          echo '--- target swept-left files ---'
+          find . -type f -path '*hair/fringe/swept left/chest.png' -printf '%s %p\n' | head -n 50 || true
+
+          echo '--- imagepack file counts ---'
+          for d in imagepacks/*; do
+            [ -d "$d" ] || continue
+            n=$(find "$d" -type f | wc -l)
+            echo "$n $d"
+          done | sort -nr | head -n 100
