@@ -1,0 +1,69 @@
+name: Search upstream repo for missing image assets
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/probe-upstream-asset-search.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  search:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Search GitLab blobs and tree
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE='https://gitgud.io/api/v4/projects/Frostberg%2Fdegrees-of-lewdity-plus'
+
+          for ref in v0.772 v0.775 master; do
+            echo "=== ref=$ref blob search ==="
+            for q in wolf-harmony.png xray_vaginal.png; do
+              code=$(curl -LsS --max-time 60 -o result.json -w '%{http_code}'                 "$BASE/search?scope=blobs&search=$q&ref=$ref")
+              echo "query=$q http=$code"
+              if [ "$code" = 200 ]; then
+                python3 - "$q" <<'PY'
+          import json,sys
+          q=sys.argv[1]
+          try:d=json.load(open('result.json'))
+          except Exception as e:
+              print('parse error',e); raise SystemExit
+          print('result_count=',len(d))
+          for x in d[:30]:
+              print('RESULT',q,x.get('path'),x.get('filename'),x.get('ref'))
+          PY
+              else
+                head -c 500 result.json || true
+              fi
+            done
+          done
+
+          echo '=== targeted repo-tree basename search on master ==='
+          page=1
+          found=0
+          while [ "$page" -le 120 ]; do
+            code=$(curl -LsS --max-time 60 -o tree.json -w '%{http_code}'               "$BASE/repository/tree?ref=master&recursive=true&per_page=100&page=$page")
+            [ "$code" = 200 ] || break
+            count=$(python3 - <<'PY'
+          import json
+          d=json.load(open('tree.json'))
+          print(len(d))
+          PY
+            )
+            [ "$count" -gt 0 ] || break
+            python3 - <<'PY' || found=1
+          import json,sys
+          d=json.load(open('tree.json'))
+          hits=[x for x in d if x.get('name') in ('wolf-harmony.png','xray_vaginal.png')]
+          for x in hits: print('TREE_FOUND',x.get('path'),x.get('id'))
+          raise SystemExit(1 if hits else 0)
+          PY
+            if [ "$found" = 1 ]; then break; fi
+            page=$((page+1))
+          done
+          echo "tree_pages_scanned=$page found_flag=$found"
