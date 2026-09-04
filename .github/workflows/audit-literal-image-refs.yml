@@ -1,0 +1,72 @@
+name: Audit v0.772 literal image references
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/audit-literal-image-refs.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout published gh-pages
+        uses: actions/checkout@v4
+        with:
+          ref: gh-pages
+          path: live-tree
+
+      - name: Download official v0.772 Aoki MYS package
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fL --retry 3 --max-time 300             -A 'Mozilla/5.0 (GitHub Actions v0.772 ref auditor)'             'https://dolp.download/DoLP_aoki_utage_mys/v0.772/DoLP_aoki_utage_mys_v0.772.zip'             -o official.zip
+          test "$(sha256sum official.zip | awk '{print $1}')" = '27227b0fa2f56e4cf2b4b8cacbc908ba2f0904f7a7b745b21b87e056dd7daf32'
+          mkdir official
+          unzip -q official.zip -d official
+
+      - name: Compare literal img references with official and published assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import re, html
+
+          game=next(Path('official').rglob('Degrees of Lewdity*.html')).read_text('utf-8')
+          off_root=next(Path('official').rglob('Degrees of Lewdity*.html')).parent/'img'
+          live_root=Path('live-tree/img')
+
+          patterns=[
+              r'''["'](img/[^"'<>\n\r]+?\.(?:png|jpg|jpeg|gif|webp|svg|avif))(?:[?#][^"']*)?["']''',
+              r'''url\(\s*["']?(img/[^)"'\n\r]+?\.(?:png|jpg|jpeg|gif|webp|svg|avif))(?:[?#][^)"']*)?["']?\s*\)'''
+          ]
+          refs=set()
+          for pat in patterns:
+              for m in re.finditer(pat,game,re.I):
+                  refs.add(html.unescape(m.group(1)).replace('\\','/'))
+
+          print('literal_img_refs=',len(refs))
+          missing_off=[]
+          missing_live=[]
+          for ref in sorted(refs):
+              rel=ref[4:] if ref.startswith('img/') else ref
+              if not (off_root/rel).is_file(): missing_off.append(ref)
+              if not (live_root/rel).is_file(): missing_live.append(ref)
+
+          print('missing_in_official_pack=',len(missing_off))
+          print('missing_in_published_site=',len(missing_live))
+          for x in missing_off:
+              print('OFFICIAL_MISSING',x)
+          for x in missing_live:
+              print('PUBLISHED_MISSING',x)
+
+          if missing_live != missing_off:
+              raise SystemExit('Published site differs from official pack for literal refs')
+          print('LITERAL_REF_PARITY_WITH_OFFICIAL=PASS')
+          PY
