@@ -1,0 +1,28 @@
+name: Inspect v0.772 CI preprocessing
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/probe-0772-ci-pre.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Inspect exact CI pre-build flow
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --depth 1 --branch v0.772 https://gitgud.io/Frostberg/degrees-of-lewdity-plus.git upstream
+          cd upstream
+          echo '--- CI first 120 ---'
+          sed -n '1,120p' .gitlab-ci.yml
+          echo '--- all before_script blocks ---'
+          grep -n -A35 -B5 '^before_script:' .gitlab-ci.yml || true
+          echo '--- build-related root scripts ---'
+          find . -maxdepth 2 -type f \( -name '*.sh' -o -name '*.mjs' -o -name '*.cjs' -o -name '*.js' \) -printf '%p\n' | sort | grep -E 'build|compile|webpack|rollup|insert|pack|setup|prepare' | head -n 200
