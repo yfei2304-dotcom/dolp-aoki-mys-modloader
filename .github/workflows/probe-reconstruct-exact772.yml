@@ -115,17 +115,26 @@ jobs:
           two=Path('loader2.txt').read_text('utf-8')
           idx=base.find('<script')
           if idx < 0: raise SystemExit('base first script not found')
-          final=base[:idx] + '\n' + one + '\n' + two + '\n' + base[idx:]
+          csp_find = "content=\"default-src 'self' 'unsafe-eval' 'unsafe-inline'"
+          csp_replace = "content=\"default-src 'self' 'unsafe-eval' 'unsafe-inline' *"
+          if csp_find not in base: raise SystemExit('CSP marker not found')
+          base2 = base.replace(csp_find, csp_replace, 1)
+          final=base2[:idx] + '\n' + one + '\n' + two + '\n' + base2[idx:]
           Path('candidate-v0772-reconstructed.html').write_text(final,'utf-8')
           b=final.encode()
           print('candidate_bytes=',len(b))
           print('candidate_sha256=',hashlib.sha256(b).hexdigest())
+          expected_size=68512914
+          expected_sha='6e792d8fd8992e74df8906b091495abc61582602e8d88eb6b32680e94635ef8d'
+          if len(b) != expected_size: raise SystemExit(f'size mismatch: {len(b)} != {expected_size}')
+          if hashlib.sha256(b).hexdigest() != expected_sha: raise SystemExit('SHA256 mismatch')
+          print('EXACT_USER_V0772_MATCH=YES')
           PY
 
       - name: Upload candidate core
         uses: actions/upload-artifact@v4
         with:
-          name: candidate-v0772-reconstructed
+          name: exact-v0772-reconstructed
           path: candidate-v0772-reconstructed.html
           compression-level: 9
           retention-days: 1
