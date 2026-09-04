@@ -461,6 +461,13 @@ jobs:
 
           cp /tmp/dolp-build/launcher.html /tmp/dolp-site/index.html
           cp /tmp/dolp-build/launcher.html /tmp/dolp-site/game-v0772.html
+
+          # Optional external files referenced by the exact upstream/ModLoader core.
+          # Safe stubs prevent GitHub Pages 404 HTML from being parsed as JSON/JS.
+          printf '[]\n' > /tmp/dolp-site/modList.json
+          printf '/* Optional external stylesheet; intentionally empty. */\n' > /tmp/dolp-site/style.css
+          printf '// Optional SugarCube user settings; intentionally empty.\n' > /tmp/dolp-site/usettings.js
+
           touch /tmp/dolp-site/.nojekyll
 
           cat > /tmp/dolp-site/build-info.json <<EOF
