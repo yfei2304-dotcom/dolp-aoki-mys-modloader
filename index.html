@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta name="theme-color" content="#101014">
+  <title>DoLP v0.772 · Aoki+Mysterious · ModLoader</title>
+  <style>
+    :root{color-scheme:dark;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}*{box-sizing:border-box}
+    body{margin:0;min-height:100svh;display:grid;place-items:center;background:#101014;color:#f2edf7;padding:1.2rem}
+    main{width:min(88vw,29rem);text-align:center}.spinner{width:2.7rem;height:2.7rem;margin:0 auto 1.2rem;border:.28rem solid #3a3440;border-top-color:#d49bea;border-radius:50%;animation:spin .85s linear infinite}
+    h1{margin:0 0 .55rem;font-size:1.16rem}p{margin:0;color:#bdb4c5;line-height:1.55;font-size:.94rem}.actions{margin-top:1.2rem}[hidden]{display:none!important}
+    button{padding:.72rem 1.1rem;border:0;border-radius:.65rem;background:#ba7ad3;color:#120d15;font:inherit;font-weight:700}@keyframes spin{to{transform:rotate(360deg)}}
+  </style>
+</head>
+<body>
+  <main>
+    <div class="spinner" id="spinner"></div>
+    <h1 id="status">正在準備 DoLP v0.772…</h1>
+    <p id="detail">Aoki+Mysterious v0.772 · ModLoader · 官方完整圖片包</p>
+    <div class="actions" id="actions" hidden><button id="retry" type="button">重新載入</button></div>
+  </main>
+  <noscript>此遊戲需要 JavaScript。</noscript>
+  <script>
+    (() => {
+      "use strict";
+      const BUILD_ID = "mys772-5cf040b44315";
+      const GAME_PAGE = "game-v0772.html";
+      const siteRoot = new URL("./", location.href);
+      const targetUrl = new URL(GAME_PAGE, siteRoot);
+      targetUrl.searchParams.set("build", BUILD_ID);
+      const status = document.getElementById("status");
+      const detail = document.getElementById("detail");
+      const spinner = document.getElementById("spinner");
+      const actions = document.getElementById("actions");
+      document.getElementById("retry").addEventListener("click", () => location.reload());
+      const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
+
+      function readWorkerBuildId(worker) {
+        return new Promise(resolve => {
+          const channel = new MessageChannel();
+          const timeout = setTimeout(() => resolve(null), 800);
+          channel.port1.onmessage = event => { clearTimeout(timeout); resolve(event.data); };
+          worker.postMessage("getBuildId", [channel.port2]);
+        });
+      }
+
+      async function waitForCurrentWorker(registration) {
+        const deadline = Date.now() + 20000;
+        while (Date.now() < deadline) {
+          const candidate = registration.installing || registration.waiting;
+          if (candidate && candidate.state === "installed") candidate.postMessage("skipWaiting");
+          if (registration.active && (await readWorkerBuildId(registration.active)) === BUILD_ID) return;
+          await delay(100);
+        }
+        throw new Error("網站載入器沒有完成更新，請重新整理後再試。");
+      }
+
+      async function start() {
+        if (!("serviceWorker" in navigator)) throw new Error("這個瀏覽器不支援遊戲所需的網站載入器。");
+        const workerUrl = new URL("sw.js", siteRoot);
+        workerUrl.searchParams.set("build", BUILD_ID);
+        const registration = await navigator.serviceWorker.register(workerUrl, {
+          scope: siteRoot.pathname,
+          updateViaCache: "none",
+        });
+        await registration.update().catch(() => undefined);
+        await waitForCurrentWorker(registration);
+
+        const onTarget = location.pathname.endsWith("/" + GAME_PAGE);
+        if (!onTarget) {
+          status.textContent = "載入器已就緒，正在進入遊戲…";
+          location.replace(targetUrl.href);
+          return;
+        }
+
+        const attemptKey = "dolp-mys772-sw-boot-" + BUILD_ID;
+        const attempts = Number(sessionStorage.getItem(attemptKey) || "0") + 1;
+        sessionStorage.setItem(attemptKey, String(attempts));
+        if (attempts > 3) throw new Error("遊戲核心沒有被 Service Worker 正確接管，請回到主網址再試一次。");
+        location.replace(targetUrl.href);
+      }
+
+      start().catch(error => {
+        console.error(error);
+        spinner.hidden = true;
+        status.textContent = "遊戲沒有成功載入";
+        detail.textContent = error instanceof Error ? error.message : String(error);
+        actions.hidden = false;
+      });
+    })();
+  </script>
+</body>
+</html>
