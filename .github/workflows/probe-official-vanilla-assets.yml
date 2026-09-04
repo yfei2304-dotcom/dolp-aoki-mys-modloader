@@ -1,0 +1,62 @@
+name: Probe official vanilla DoL assets
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/probe-official-vanilla-assets.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Probe official Vrelnir DoL and public mirrors
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import subprocess, hashlib, os
+
+          files=[
+              'img/ui/wolfharmony.png',
+              'img/sex/machine/vaginal/xray_vaginal.png',
+          ]
+          bases=[
+              ('official-master','https://gitgud.io/Vrelnir/degrees-of-lewdity/-/raw/master/'),
+              ('mirror-world-expansion','https://raw.githubusercontent.com/noeinan/DoL-World-Expansion-Mod/master/'),
+              ('mirror-fishing','https://raw.githubusercontent.com/Future-R/DOLFishing/master/'),
+              ('mirror-jaiiba','https://raw.githubusercontent.com/jaiiba/DoL/master/'),
+          ]
+
+          results={}
+          for label,base in bases:
+              for path in files:
+                  out='/tmp/asset.bin'
+                  p=subprocess.run([
+                      'curl','-LsS','--max-time','60','-o',out,'-w','%{http_code}',base+path
+                  ],capture_output=True,text=True)
+                  code=p.stdout.strip()
+                  size=os.path.getsize(out) if os.path.exists(out) else 0
+                  if code=='200' and size>0:
+                      data=open(out,'rb').read()
+                      sha=hashlib.sha256(data).hexdigest()
+                      results[(label,path)]=(len(data),sha)
+                      print('FOUND',label,path,'bytes=',len(data),'sha256=',sha)
+                  else:
+                      print('MISS',label,path,'http=',code,'bytes=',size)
+
+          print('=== SHA agreement ===')
+          for path in files:
+              vals=[(label,results.get((label,path))) for label,_ in bases if (label,path) in results]
+              print('PATH',path,vals)
+              shas={v[1] for _,v in vals}
+              if len(vals)>=2 and len(shas)==1:
+                  print('AGREE',path,next(iter(shas)))
+              else:
+                  print('NO_AGREEMENT',path)
+          PY
