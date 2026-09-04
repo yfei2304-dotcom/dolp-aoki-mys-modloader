@@ -64,9 +64,16 @@ jobs:
           cd ..
           echo "patched_bytes=$(wc -c < official-base.sc2patch.html)"
           echo "patched_sha256=$(sha256sum official-base.sc2patch.html | awk '{print $1}')"
-          test "$(wc -c < official-base.sc2patch.html)" = "54057021"
-          test "$(sha256sum official-base.sc2patch.html | awk '{print $1}')" = "db22e9d374172de76a8788c3e338349326cfdfb9e46792bf6820155496c7a7be"
-          echo 'SC2PATCH_EXACT_MATCH=YES'
+          echo "expected_bytes=54057021"
+          echo "expected_sha256=db22e9d374172de76a8788c3e338349326cfdfb9e46792bf6820155496c7a7be"
+
+      - name: Upload patched base for byte diff
+        uses: actions/upload-artifact@v4
+        with:
+          name: cheerio-patched-v0772
+          path: official-base.sc2patch.html
+          compression-level: 9
+          retention-days: 1
 
       - name: Extract exact Loader blocks from known-good v0.768
         shell: bash
@@ -109,19 +116,16 @@ jobs:
           idx=base.find('<script')
           if idx < 0: raise SystemExit('base first script not found')
           final=base[:idx] + '\n' + one + '\n' + two + '\n' + base[idx:]
-          Path('exact-v0772-reconstructed.html').write_text(final,'utf-8')
+          Path('candidate-v0772-reconstructed.html').write_text(final,'utf-8')
           b=final.encode()
-          print('final_bytes=',len(b))
-          print('final_sha256=',hashlib.sha256(b).hexdigest())
+          print('candidate_bytes=',len(b))
+          print('candidate_sha256=',hashlib.sha256(b).hexdigest())
           PY
-          test "$(wc -c < exact-v0772-reconstructed.html)" = "68512914"
-          test "$(sha256sum exact-v0772-reconstructed.html | awk '{print $1}')" = "6e792d8fd8992e74df8906b091495abc61582602e8d88eb6b32680e94635ef8d"
-          echo 'EXACT_USER_V0772_MATCH=YES'
 
-      - name: Upload reconstructed exact core
+      - name: Upload candidate core
         uses: actions/upload-artifact@v4
         with:
-          name: exact-v0772-reconstructed
-          path: exact-v0772-reconstructed.html
+          name: candidate-v0772-reconstructed
+          path: candidate-v0772-reconstructed.html
           compression-level: 9
           retention-days: 1
