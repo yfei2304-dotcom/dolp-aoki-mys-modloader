@@ -1,0 +1,31 @@
+name: Fetch pinned OpenCC browser bundle
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/fetch-opencc.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - name: Fetch OpenCC 1.4.2 UMD
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fL --retry 3 --max-time 120             'https://cdn.jsdelivr.net/npm/opencc-js@1.4.2/dist/umd/full.js'             -o opencc-full-1.4.2.js
+          test "$(wc -c < opencc-full-1.4.2.js)" -gt 100000
+          sha256sum opencc-full-1.4.2.js
+      - name: Upload pinned bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: opencc-full-1.4.2
+          path: opencc-full-1.4.2.js
+          compression-level: 9
+          retention-days: 1
