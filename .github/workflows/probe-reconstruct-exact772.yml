@@ -13,9 +13,9 @@ permissions:
 jobs:
   reconstruct:
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 20
     steps:
-      - name: Download official v0.772 Aoki MYS and source tools
+      - name: Download official v0.772 Aoki MYS base
         shell: bash
         run: |
           set -euo pipefail
@@ -25,25 +25,47 @@ jobs:
           BASE=$(find official -type f -name 'Degrees of Lewdity*.html' | head -n1)
           test -n "$BASE"
           cp "$BASE" official-base.html
+          echo "official_base_bytes=$(wc -c < official-base.html)"
+          sha256sum official-base.html
 
-          API='https://gitgud.io/api/v4/projects/Frostberg%2Fdegrees-of-lewdity-plus'
-          curl -fL --retry 2 --max-time 180 -A 'Mozilla/5.0'             "$API/repository/archive.tar.gz?sha=v0.772" -o source.tar.gz
-          mkdir source
-          tar -xzf source.tar.gz -C source --strip-components=1
-          test -s source/dist-insertTools/sc2PatchTool.js
-
-      - name: Run the bundled v0.772 sc2PatchTool
+      - name: Reproduce ModLoader sc2PatchTool with pinned Cheerio
         shell: bash
         run: |
           set -euo pipefail
-          node source/dist-insertTools/sc2PatchTool.js official-base.html
-          test -s official-base.html.sc2patch.html
-          echo "patched_bytes=$(wc -c < official-base.html.sc2patch.html)"
-          echo "patched_sha256=$(sha256sum official-base.html.sc2patch.html | awk '{print $1}')"
-          echo "expected_bytes=54057021"
-          echo "expected_sha256=db22e9d374172de76a8788c3e338349326cfdfb9e46792bf6820155496c7a7be"
-          test "$(wc -c < official-base.html.sc2patch.html)" = "54057021"
-          test "$(sha256sum official-base.html.sc2patch.html | awk '{print $1}')" = "db22e9d374172de76a8788c3e338349326cfdfb9e46792bf6820155496c7a7be"
+          mkdir patcher && cd patcher
+          npm init -y >/dev/null 2>&1
+          npm install --silent cheerio@1.0.0-rc.12
+          cat > patch.js <<'JS'
+          const fs = require('fs');
+          const cheerio = require('cheerio');
+          const htmlF = fs.readFileSync('../official-base.html','utf8');
+          const ht = cheerio.load(htmlF);
+          const sC2Script = ht('script#script-sugarcube[type="text/javascript"]');
+          if (sC2Script.length !== 1) throw new Error('SugarCube script count=' + sC2Script.length);
+          let sc2JsText = sC2Script.text();
+          const starHeadOld = 'window.SugarCube={},jQuery((()=>{';
+          const startHeadNew = 'window.SugarCube={},window.mainStart=((()=>{';
+          const startTailOld = '}))})(window,window.document,jQuery);';
+          const startTailNew = `}))
+          // inject ModLoader on there
+          if (typeof window.modSC2DataManager !== 'undefined') {
+          window.modSC2DataManager.startInit().then(() => window.jsPreloader.startLoad()).then(() => {window.mainStart();window.initI10n(l10nStrings);}).catch(err => {console.error(err);});}else {window.mainStart();window.initI10n(l10nStrings);
+          }
+              })(window,window.document,jQuery);`;
+          if (!sc2JsText.includes(starHeadOld)) throw new Error('start head not found');
+          if (!sc2JsText.includes(startTailOld)) throw new Error('start tail not found');
+          sc2JsText = sc2JsText.split(starHeadOld).join(startHeadNew).split(startTailOld).join(startTailNew);
+          sC2Script.text(sc2JsText);
+          const out = ht.root().html();
+          if (!out) throw new Error('empty cheerio output');
+          fs.writeFileSync('../official-base.sc2patch.html', out, 'utf8');
+          JS
+          node patch.js
+          cd ..
+          echo "patched_bytes=$(wc -c < official-base.sc2patch.html)"
+          echo "patched_sha256=$(sha256sum official-base.sc2patch.html | awk '{print $1}')"
+          test "$(wc -c < official-base.sc2patch.html)" = "54057021"
+          test "$(sha256sum official-base.sc2patch.html | awk '{print $1}')" = "db22e9d374172de76a8788c3e338349326cfdfb9e46792bf6820155496c7a7be"
           echo 'SC2PATCH_EXACT_MATCH=YES'
 
       - name: Extract exact Loader blocks from known-good v0.768
@@ -60,21 +82,14 @@ jobs:
           import hashlib
           s=Path('exact768.html').read_text('utf-8')
           first=s.find('<script')
-          if first < 0: raise SystemExit('first script not found')
-          end1=s.find('</script>', first)
-          if end1 < 0: raise SystemExit('end script1 not found')
-          end1 += len('</script>')
+          end1=s.find('</script>', first)+len('</script>')
           second=s.find('<script', end1)
-          if second < 0: raise SystemExit('second script not found')
-          end2=s.find('</script>', second)
-          if end2 < 0: raise SystemExit('end script2 not found')
-          end2 += len('</script>')
+          end2=s.find('</script>', second)+len('</script>')
+          if min(first,end1,second,end2) < 0: raise SystemExit('loader script boundary not found')
           script1=s[first:end1]
           script2=s[second:end2]
-          if 'window.modDataValueZipList' not in script1:
-              raise SystemExit('script1 is not modDataValueZipList')
-          if 'modSC2DataManager' not in script2:
-              raise SystemExit('script2 is not BeforeSC2')
+          if 'window.modDataValueZipList' not in script1: raise SystemExit('script1 wrong')
+          if 'modSC2DataManager' not in script2: raise SystemExit('script2 wrong')
           Path('loader1.txt').write_text(script1,'utf-8')
           Path('loader2.txt').write_text(script2,'utf-8')
           for n,x in [('loader1',script1),('loader2',script2)]:
@@ -88,7 +103,7 @@ jobs:
           python3 - <<'PY'
           from pathlib import Path
           import hashlib
-          base=Path('official-base.html.sc2patch.html').read_text('utf-8')
+          base=Path('official-base.sc2patch.html').read_text('utf-8')
           one=Path('loader1.txt').read_text('utf-8')
           two=Path('loader2.txt').read_text('utf-8')
           idx=base.find('<script')
