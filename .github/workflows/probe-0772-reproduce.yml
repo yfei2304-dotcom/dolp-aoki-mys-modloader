@@ -1,0 +1,90 @@
+name: Reproduce exact DoLP v0.772 ModLoader
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/probe-0772-reproduce.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  reproduce:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Clone, compile, inspect injection tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --depth 1 --branch v0.772 https://gitgud.io/Frostberg/degrees-of-lewdity-plus.git upstream
+          cd upstream
+          echo "HEAD=$(git rev-parse HEAD)"
+          echo "version_file=$(cat version)"
+
+          echo '--- insert tools ---'
+          find dist-insertTools dist-BeforeSC2 -maxdepth 2 -type f -printf '%s %p\n' | sort
+          echo '--- tool references ---'
+          grep -RniE 'modDataValueZipList|insert2html|modList|BeforeSC2|base64|readFile|writeFile' dist-insertTools dist-BeforeSC2 2>/dev/null | head -n 250 || true
+
+          # Reproduce CI release-version substitution for v0.772.
+          find ./version -type f -exec sed -i 's/DoLP version/DoLP v0.772/g' {} +
+          find ./devTools/apkbuilder/config.xml -type f -exec sed -i 's/DoLP version/DoLP v0.772/g' {} + || true
+          find ./game/01-config/sugarcubeConfig.js -type f -exec sed -i 's/DoLP version/DoLP v0.772/g' {} +
+
+          FORCE_VERSION='' sh ./compile.sh
+          BASE='Degrees of Lewdity.html'
+          echo '--- base build ---'
+          wc -c "$BASE"
+          sha256sum "$BASE"
+          grep -ao '0.5.12.6 DoLP v0.772' "$BASE" | head
+          grep -ao 'window.modDataValueZipList' "$BASE" | wc -l
+
+          echo '--- run official ModLoader injector ---'
+          node dist-insertTools/insert2html.cjs "$BASE" modList.json dist-BeforeSC2/BeforeSC2.js
+          find . -maxdepth 1 -type f -name 'Degrees of Lewdity*.html*' -printf '%s %p\n' | sort
+
+          CAND="$BASE.mod.html"
+          if [ -f "$CAND" ]; then
+            echo '--- injected candidate ---'
+            wc -c "$CAND"
+            sha256sum "$CAND"
+            grep -ao '0.5.12.6 DoLP v0.772' "$CAND" | head
+            echo -n 'modDataValueZipList_count='
+            grep -ao 'window.modDataValueZipList' "$CAND" | wc -l
+            echo -n 'BeforeSC2_count='
+            grep -ao 'BeforeSC2' "$CAND" | wc -l
+          fi
+
+          echo '--- expected user upload ---'
+          echo 'expected_size=68512914'
+          echo 'expected_sha256=6e792d8fd8992e74df8906b091495abc61582602e8d88eb6b32680e94635ef8d'
+
+      - name: Reproduce official v0.772 Aoki+Mysterious imagepack
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd upstream
+          mkdir -p /tmp/aoki-mys/img
+          cp -a imagepacks/vanilla/. /tmp/aoki-mys/img/
+          cp -a imagepacks/dolp/. /tmp/aoki-mys/img/
+          cp -a imagepacks/au/. /tmp/aoki-mys/img/
+          cp -a imagepacks/mysterious/. /tmp/aoki-mys/img/
+
+          echo "merged_files=$(find /tmp/aoki-mys/img -type f | wc -l)"
+          echo "merged_png=$(find /tmp/aoki-mys/img -type f -iname '*.png' | wc -l)"
+          echo "merged_bytes=$(du -sb /tmp/aoki-mys/img | awk '{print $1}')"
+
+          for P in             'hair/fringe/swept left/chest.png'             'body/base-classic.png'             'ui/card-logo.png'             'misc/fishing-minigame/sweat-1.png'             'misc/fishing-minigame/sweat-2.png'             'misc/fishing-minigame/sweat-3.png'; do
+            F="/tmp/aoki-mys/img/$P"
+            if [ -f "$F" ]; then
+              printf '%s ' "$P"
+              wc -c < "$F" | tr -d '\n'
+              printf ' '
+              sha256sum "$F" | awk '{print $1}'
+            else
+              echo "$P MISSING"
+            fi
+          done
