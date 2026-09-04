@@ -1,0 +1,31 @@
+name: Probe DoLP v0.772 source tag
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/probe-0772-tag.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check upstream tags and archive
+        shell: bash
+        run: |
+          set +e
+          REPO='https://gitgud.io/Frostberg/degrees-of-lewdity-plus.git'
+          echo '--- ls-remote v0.772 ---'
+          git ls-remote --tags "$REPO" 'refs/tags/v0.772' 'refs/tags/v0.772^{}' || true
+          echo '--- nearby 0.77 tags ---'
+          git ls-remote --tags "$REPO" | grep -E 'refs/tags/v0\.77[0-9]' | tail -n 30 || true
+          echo '--- archive candidates ---'
+          for U in             'https://gitgud.io/Frostberg/degrees-of-lewdity-plus/-/archive/v0.772/degrees-of-lewdity-plus-v0.772.tar.gz'             'https://gitgud.io/Frostberg/degrees-of-lewdity-plus/-/archive/v0.772/degrees-of-lewdity-plus-v0.772.zip'; do
+            echo "== $U =="
+            curl -L --max-time 120 -sS -o archive.bin -w 'HTTP=%{http_code} SIZE=%{size_download} FINAL=%{url_effective}\n' "$U"
+            file archive.bin || true
+          done
