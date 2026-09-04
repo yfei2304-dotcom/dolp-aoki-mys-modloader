@@ -1,0 +1,66 @@
+name: Probe official DoLP v0.772 Aoki MYS package
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/probe-official-mys772.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Download official Aoki+Mysterious v0.772 package
+        shell: bash
+        run: |
+          set -euo pipefail
+          URL='https://dolp.download/DoLP_aoki_utage_mys/v0.772/DoLP_aoki_utage_mys_v0.772.zip'
+          curl -fL --retry 3 --max-time 300 -A 'Mozilla/5.0 (GitHub Actions DoLP verifier)' "$URL" -o official.zip
+          echo "zip_bytes=$(wc -c < official.zip)"
+          sha256sum official.zip
+          unzip -t official.zip >/dev/null
+          echo '=== top-level ==='
+          unzip -Z1 official.zip | head -n 30
+
+      - name: Inspect official HTML and image tree
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf official && mkdir official
+          unzip -q official.zip -d official
+          HTML=$(find official -type f -name 'Degrees of Lewdity*.html' | head -n1)
+          test -n "$HTML"
+          echo "html=$HTML"
+          echo "html_bytes=$(wc -c < "$HTML")"
+          echo "html_sha256=$(sha256sum "$HTML" | awk '{print $1}')"
+          echo "expected_stripped_exact_772_bytes=54057021"
+          echo "expected_stripped_exact_772_sha256=db22e9d374172de76a8788c3e338349326cfdfb9e46792bf6820155496c7a7be"
+          if [ "$(wc -c < "$HTML")" = '54057021' ] && [ "$(sha256sum "$HTML" | awk '{print $1}')" = 'db22e9d374172de76a8788c3e338349326cfdfb9e46792bf6820155496c7a7be' ]; then
+            echo 'EXACT_BASE_MATCH=YES'
+          else
+            echo 'EXACT_BASE_MATCH=NO'
+          fi
+          ROOT=$(dirname "$HTML")
+          echo "image_files=$(find "$ROOT/img" -type f | wc -l)"
+          echo "image_bytes=$(du -sb "$ROOT/img" | awk '{print $1}')"
+          for rel in             'hair/fringe/swept left/chest.png'             'misc/fishing-minigame/sweat-1.png'             'misc/sky/stars/star-2.png'             'misc/locations/banner/ice.png'; do
+            if [ -s "$ROOT/img/$rel" ]; then
+              echo "PRESENT img/$rel $(wc -c < "$ROOT/img/$rel") $(sha256sum "$ROOT/img/$rel" | awk '{print $1}')"
+            else
+              echo "MISSING img/$rel"
+            fi
+          done
+          cp "$HTML" official-base-v0772.html
+
+      - name: Upload official HTML for byte-level comparison
+        uses: actions/upload-artifact@v4
+        with:
+          name: official-base-v0772
+          path: official-base-v0772.html
+          compression-level: 9
+          retention-days: 1
