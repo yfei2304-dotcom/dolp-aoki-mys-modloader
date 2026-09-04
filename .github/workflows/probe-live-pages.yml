@@ -1,0 +1,116 @@
+name: Probe live GitHub Pages v0.772
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/probe-live-pages.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Wait for live Pages deployment
+        shell: bash
+        run: |
+          set -euo pipefail
+          ROOT='https://yfei2304-dotcom.github.io/dolp-aoki-mys-modloader'
+          EXPECTED_BUILD='mys772-c915efd39e0e'
+
+          ok=0
+          for i in $(seq 1 60); do
+            code=$(curl -LsS --max-time 30 -o /tmp/build-info.json -w '%{http_code}' "$ROOT/build-info.json?probe=$i" || true)
+            echo "attempt=$i http=$code"
+            if [ "$code" = 200 ] && python3 - <<'PY'
+          import json
+          p='/tmp/build-info.json'
+          try:
+              d=json.load(open(p))
+          except Exception:
+              raise SystemExit(1)
+          if d.get('core') != '0.5.12.6 DoLP v0.772':
+              raise SystemExit(1)
+          if d.get('sourceSha256') != '6e792d8fd8992e74df8906b091495abc61582602e8d88eb6b32680e94635ef8d':
+              raise SystemExit(1)
+          if d.get('build') != 'mys772-c915efd39e0e':
+              raise SystemExit(1)
+          print('live_build_info=',d)
+          PY
+            then
+              ok=1
+              break
+            fi
+            sleep 10
+          done
+
+          test "$ok" = 1
+
+      - name: Verify live launcher and Service Worker
+        shell: bash
+        run: |
+          set -euo pipefail
+          ROOT='https://yfei2304-dotcom.github.io/dolp-aoki-mys-modloader'
+          curl -fLsS --max-time 60 "$ROOT/" -o /tmp/index.html
+          curl -fLsS --max-time 60 "$ROOT/game-v0772.html" -o /tmp/game-launcher.html
+          curl -fLsS --max-time 60 "$ROOT/sw.js" -o /tmp/sw.js
+
+          grep -q 'DoLP v0.772' /tmp/index.html
+          grep -q 'game-v0772.html' /tmp/index.html
+          grep -q 'game-v0772.bundle' /tmp/sw.js
+          grep -q '0.5.12.6 DoLP v0.772' /tmp/sw.js
+          echo "index_bytes=$(wc -c < /tmp/index.html)"
+          echo "game_launcher_bytes=$(wc -c < /tmp/game-launcher.html)"
+          echo "sw_bytes=$(wc -c < /tmp/sw.js)"
+
+      - name: Verify live exact core bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+          ROOT='https://yfei2304-dotcom.github.io/dolp-aoki-mys-modloader'
+          curl -fLsS --max-time 180 "$ROOT/payload/game-v0772.bundle" -o /tmp/live.bundle
+          gzip -t /tmp/live.bundle
+          gzip -dc /tmp/live.bundle > /tmp/live.html
+
+          size=$(wc -c < /tmp/live.html)
+          sha=$(sha256sum /tmp/live.html | awk '{print $1}')
+          echo "live_bundle_bytes=$(wc -c < /tmp/live.bundle)"
+          echo "live_core_bytes=$size"
+          echo "live_core_sha256=$sha"
+
+          test "$size" = '68512914'
+          test "$sha" = '6e792d8fd8992e74df8906b091495abc61582602e8d88eb6b32680e94635ef8d'
+          grep -aq '0.5.12.6 DoLP v0.772' /tmp/live.html
+          grep -aq 'window.modDataValueZipList' /tmp/live.html
+
+      - name: Verify formerly missing v0.772 MYS images
+        shell: bash
+        run: |
+          set -euo pipefail
+          ROOT='https://yfei2304-dotcom.github.io/dolp-aoki-mys-modloader'
+          python3 - <<'PY'
+          import urllib.request, hashlib
+          root='https://yfei2304-dotcom.github.io/dolp-aoki-mys-modloader/img/'
+          items={
+              'hair/fringe/swept%20left/chest.png': (19537,'4d643cd9f6a9b7a923117bc873900e1534f33379fce1db96aed4b84544eaf5c5'),
+              'misc/fishing-minigame/sweat-1.png': (3640,'a33037af9225e5764975d78591ce40b30997158d31c7d1b9009523535ee60895'),
+              'misc/sky/stars/star-2.png': (133,'5cce9d89b26562c37f07f1575627b48f518cb2a56b1113807d2c30ed53bf5ab1'),
+              'misc/locations/banner/ice.png': (675,'227d31bae00dc2c6daa901c98afe3236415db589cb772d47da04759f75381f42'),
+          }
+          for rel,(expected_size,expected_sha) in items.items():
+              req=urllib.request.Request(root+rel,headers={'User-Agent':'Mozilla/5.0 GitHub-Actions-live-probe'})
+              with urllib.request.urlopen(req,timeout=60) as r:
+                  data=r.read()
+                  status=r.status
+                  ctype=r.headers.get('content-type')
+              sha=hashlib.sha256(data).hexdigest()
+              print(rel,'status=',status,'bytes=',len(data),'sha256=',sha,'type=',ctype)
+              if status != 200 or len(data) != expected_size or sha != expected_sha:
+                  raise SystemExit('live image mismatch: '+rel)
+          PY
+
+          echo 'LIVE_PAGES_V0772_STATIC_PROBE=PASS'
