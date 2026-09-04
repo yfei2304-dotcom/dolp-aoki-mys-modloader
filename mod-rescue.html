@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>DoLP ModLoader 救援工具</title>
+<style>
+:root{color-scheme:dark;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}body{margin:0;background:#111;color:#eee;padding:24px;min-height:100svh;box-sizing:border-box}.card{max-width:680px;margin:auto;background:#1b1b1f;border:1px solid #444;border-radius:16px;padding:20px}h1{font-size:1.35rem;margin-top:0}p{line-height:1.55;color:#ccc}.status{white-space:pre-wrap;background:#0d0d10;border-radius:10px;padding:12px;margin:14px 0;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:.87rem;max-height:38svh;overflow:auto}button,a.btn{display:inline-block;border:0;border-radius:10px;padding:12px 16px;margin:6px 8px 6px 0;font:inherit;font-weight:700;text-decoration:none;background:#eee;color:#111}.danger{background:#ff8b8b!important}code{word-break:break-word}</style>
+</head>
+<body><main class="card">
+<h1>DoLP ModLoader 救援工具</h1>
+<p>這頁只操作 <b>ModLoader 的 Mod 儲存區</b>，不會清除 SugarCube 遊戲存檔。用來移除卡住啟動的 <code>ModI18N772Ext</code> 補充包。</p>
+<div class="status" id="status">正在讀取 ModLoader 儲存區…</div>
+<button id="remove" class="danger" disabled>只移除 ModI18N772Ext 補充包</button>
+<button id="refresh">重新掃描</button>
+<a class="btn" href="./">回遊戲首頁</a>
+<script>
+(() => {
+'use strict';
+const DB='ModLoader_IndexDBLoader', STORE='ModLoader_IndexDBLoader';
+const LIST='modDataIndexDBZipList', HIDDEN='modDataIndexDBZipListHidden', PREFIX='modDataIndexDBZip:';
+const status=document.getElementById('status'), removeBtn=document.getElementById('remove');
+function say(s){status.textContent=s;}
+function openDb(){return new Promise((res,rej)=>{const r=indexedDB.open(DB);r.onerror=()=>rej(r.error);r.onsuccess=()=>res(r.result);r.onupgradeneeded=()=>{try{r.transaction.abort()}catch{}};});}
+function req(r){return new Promise((res,rej)=>{r.onsuccess=()=>res(r.result);r.onerror=()=>rej(r.error);});}
+async function getKey(db,key){const tx=db.transaction(STORE,'readonly');return req(tx.objectStore(STORE).get(key));}
+async function scan(){
+ removeBtn.disabled=true;
+ try{
+  const db=await openDb();
+  if(!db.objectStoreNames.contains(STORE)){say('找不到 ModLoader 的 IndexedDB store。\n\n如果妳使用的不是 IndexDB 旁載，請告訴我。');return;}
+  const raw=await getKey(db,LIST);let list=[];try{list=raw?JSON.parse(raw):[]}catch{}
+  const current=Array.isArray(list)?list:[];
+  const hits=current.filter(n=>/ModI18N772Ext|Extended[-_ ]?TW|ModI18N-DoLP-v0\.772-Extended/i.test(String(n)));
+  say('已讀到 ModLoader Mod 清單：\n\n'+current.map((x,i)=>(hits.includes(x)?'⚠️ ':'   ')+(i+1)+'. '+x).join('\n')+'\n\n偵測到補充包： '+(hits.length?hits.join(', '):'沒有'));
+  removeBtn.disabled=!hits.length;removeBtn.dataset.hits=JSON.stringify(hits);db.close();
+ }catch(e){
+  let ls=[];try{ls=JSON.parse(localStorage.getItem('modDataLocalStorageZipList')||'[]')}catch{}
+  const hits=Array.isArray(ls)?ls.filter(n=>/ModI18N772Ext|Extended[-_ ]?TW|ModI18N-DoLP-v0\.772-Extended/i.test(String(n))):[];
+  if(hits.length){removeBtn.disabled=false;removeBtn.dataset.hits=JSON.stringify(hits);say('IndexedDB 讀取失敗，但在 legacy localStorage 找到補充包：\n'+hits.join('\n')+'\n\n錯誤：'+e);}
+  else say('無法讀取 ModLoader 儲存區：\n'+e+'\n\n沒有做任何刪除。');
+ }
+}
+async function remove(){
+ const hits=JSON.parse(removeBtn.dataset.hits||'[]');if(!hits.length)return;
+ if(!confirm('只移除這個漢化補充包？\n\n'+hits.join('\n')+'\n\n不會清除遊戲存檔。'))return;
+ removeBtn.disabled=true;let done=[];
+ try{
+  const db=await openDb();
+  if(db.objectStoreNames.contains(STORE)){
+   const raw=await getKey(db,LIST);let list=[];try{list=raw?JSON.parse(raw):[]}catch{}
+   const hiddenRaw=await getKey(db,HIDDEN);let hidden=[];try{hidden=hiddenRaw?JSON.parse(hiddenRaw):[]}catch{}
+   list=Array.isArray(list)?list.filter(x=>!hits.includes(x)):[];
+   hidden=Array.isArray(hidden)?hidden.filter(x=>!hits.includes(x)):[];
+   await new Promise((res,rej)=>{const tx=db.transaction(STORE,'readwrite'),st=tx.objectStore(STORE);st.put(JSON.stringify(list),LIST);st.put(JSON.stringify(hidden),HIDDEN);hits.forEach(n=>st.delete(PREFIX+n));tx.oncomplete=res;tx.onerror=()=>rej(tx.error);tx.onabort=()=>rej(tx.error||new Error('transaction aborted'));});
+   db.close();done.push('IndexedDB');
+  }
+ }catch(e){console.error(e);}
+ try{const raw=localStorage.getItem('modDataLocalStorageZipList');if(raw){let list=JSON.parse(raw);if(Array.isArray(list)){list=list.filter(x=>!hits.includes(x));localStorage.setItem('modDataLocalStorageZipList',JSON.stringify(list));hits.forEach(n=>localStorage.removeItem('modDataLocalStorageZip:'+n));done.push('localStorage');}}}catch(e){console.error(e);}
+ localStorage.removeItem('ModI18N772Ext.locale');localStorage.removeItem('ModI18N772Ext.locale.safe.v1');
+ say('✅ 已移除補充包。\n處理位置：'+(done.join(' + ')||'未找到可修改位置')+'\n\n現在可以按「回遊戲首頁」重新進入。');removeBtn.dataset.hits='[]';
+}
+document.getElementById('refresh').onclick=scan;removeBtn.onclick=remove;scan();
+})();
+</script></main></body></html>
