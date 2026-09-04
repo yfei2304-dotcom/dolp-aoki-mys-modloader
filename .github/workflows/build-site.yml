@@ -1,4 +1,4 @@
-name: Build Aoki+Mysterious ModLoader site
+name: Build DoLP v0.772 Aoki+Mysterious ModLoader site
 
 on:
   push:
@@ -24,166 +24,289 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Download and verify exact v0.768 ModLoader core
+      - name: Prepare build directories
         shell: bash
         run: |
           set -euo pipefail
-          ROOT='https://dolp-aoki-modloader.yfei2304.chatgpt.site/'
-          EXPECTED_SIZE='67147773'
-          EXPECTED_SHA='ebda02401b169579b30bfd3796e685e60bee23d46ee06f61548c5e7f0f2108ef'
+          rm -rf /tmp/dolp-build /tmp/dolp-site
           mkdir -p /tmp/dolp-build /tmp/dolp-site/payload
 
-          curl -fL --retry 2 --max-time 180             -A 'Mozilla/5.0 (GitHub Actions DoLP builder)'             "${ROOT}payload/game-v0768.bundle"             -o /tmp/dolp-build/source.bundle
-
-          gzip -dc /tmp/dolp-build/source.bundle > /tmp/dolp-build/source.html
-          actual_size=$(wc -c < /tmp/dolp-build/source.html)
-          actual_sha=$(sha256sum /tmp/dolp-build/source.html | awk '{print $1}')
-
-          echo "uncompressed_bytes=$actual_size"
-          echo "source_sha256=$actual_sha"
-          test "$actual_size" = "$EXPECTED_SIZE"
-          test "$actual_sha" = "$EXPECTED_SHA"
-          grep -aq '0.5.11.9 DoLP v0.768' /tmp/dolp-build/source.html
-          grep -aq 'window.modDataValueZipList' /tmp/dolp-build/source.html
-
-          cp /tmp/dolp-build/source.bundle /tmp/dolp-site/payload/game-v0768.bundle
-
-      - name: Download MYS image map
+      - name: Download and verify official v0.772 Aoki+Mysterious package
         shell: bash
         run: |
           set -euo pipefail
-          curl -fL --retry 3 --max-time 120             -A 'Mozilla/5.0 (GitHub Actions DoLP builder)'             'https://dolp.dolmods.net/aokimyst/img.json'             -o /tmp/dolp-build/img.json
+          URL='https://dolp.download/DoLP_aoki_utage_mys/v0.772/DoLP_aoki_utage_mys_v0.772.zip'
+          EXPECTED_ZIP_SIZE='120493476'
+          EXPECTED_ZIP_SHA='27227b0fa2f56e4cf2b4b8cacbc908ba2f0904f7a7b745b21b87e056dd7daf32'
+          EXPECTED_HTML_SIZE='57180487'
+          EXPECTED_HTML_SHA='3d57b91c6afea5baef09f0034b2959fe25b7694677b0f480d28b6b0b6df46252'
+
+          curl -fL --retry 3 --max-time 300             -A 'Mozilla/5.0 (GitHub Actions DoLP builder)'             "$URL"             -o /tmp/dolp-build/official.zip
+
+          zip_size=$(wc -c < /tmp/dolp-build/official.zip)
+          zip_sha=$(sha256sum /tmp/dolp-build/official.zip | awk '{print $1}')
+          echo "official_zip_bytes=$zip_size"
+          echo "official_zip_sha256=$zip_sha"
+          test "$zip_size" = "$EXPECTED_ZIP_SIZE"
+          test "$zip_sha" = "$EXPECTED_ZIP_SHA"
+          unzip -t /tmp/dolp-build/official.zip >/dev/null
+
+          mkdir /tmp/dolp-build/official
+          unzip -q /tmp/dolp-build/official.zip -d /tmp/dolp-build/official
+          HTML=$(find /tmp/dolp-build/official -type f -name 'Degrees of Lewdity*.html' | head -n1)
+          test -n "$HTML"
+          ROOT=$(dirname "$HTML")
+          cp "$HTML" /tmp/dolp-build/official-base.html
+
+          html_size=$(wc -c < /tmp/dolp-build/official-base.html)
+          html_sha=$(sha256sum /tmp/dolp-build/official-base.html | awk '{print $1}')
+          echo "official_html_bytes=$html_size"
+          echo "official_html_sha256=$html_sha"
+          test "$html_size" = "$EXPECTED_HTML_SIZE"
+          test "$html_sha" = "$EXPECTED_HTML_SHA"
+
+          test -d "$ROOT/img"
+          cp -a "$ROOT/img" /tmp/dolp-site/img
 
           python3 - <<'PY'
-          import json
           from pathlib import Path
-          d=json.loads(Path('/tmp/dolp-build/img.json').read_text('utf-8'))
+          root=Path('/tmp/dolp-site/img')
+          files=[p for p in root.rglob('*') if p.is_file()]
+          total=sum(p.stat().st_size for p in files)
+          print('official_image_files=',len(files))
+          print('official_image_file_bytes=',total)
+          if len(files) != 30917:
+              raise SystemExit(f'Unexpected official image count: {len(files)}')
           required=[
+              'hair/fringe/swept left/chest.png',
+              'misc/fishing-minigame/sweat-1.png',
               'misc/sky/stars/star-2.png',
-              'misc/sky/stars/star-3.png',
-              'misc/sky/stars/star-4.png',
               'misc/locations/banner/ice.png',
-              'misc/locations/banner/water.png',
-              'misc/locations/banner/reflective.png',
-              'misc/locations/banner/snow.png',
               'ui/card-logo.png',
               'body/base-classic.png',
               'body/base-head.png',
           ]
-          print('mapping_count=', len(d))
-          if len(d) < 30000:
-              raise SystemExit(f'Unexpectedly small MYS image map: {len(d)}')
-          missing=[k for k in required if not d.get(k)]
-          for k in required:
-              print(k, '=>', d.get(k))
+          missing=[x for x in required if not (root/x).is_file() or (root/x).stat().st_size == 0]
+          for x in required:
+              p=root/x
+              print(x, 'bytes=', p.stat().st_size if p.exists() else None)
           if missing:
-              raise SystemExit('Required screenshot assets missing from MYS map: ' + ', '.join(missing))
+              raise SystemExit('Required v0.772 MYS assets missing: '+', '.join(missing))
           PY
 
-      - name: Materialize all Aoki+Mysterious images into site
+      - name: Reuse existing exact v0.772 bundle when available
+        id: reuse772
         shell: bash
         run: |
           set -euo pipefail
+          EXPECTED_SIZE='68512914'
+          EXPECTED_SHA='6e792d8fd8992e74df8906b091495abc61582602e8d88eb6b32680e94635ef8d'
+          URL='https://raw.githubusercontent.com/yfei2304-dotcom/dolp-aoki-mys-modloader/gh-pages/payload/game-v0772.bundle'
+
+          if curl -fL --retry 1 --max-time 120             -A 'Mozilla/5.0 (GitHub Actions DoLP builder)'             "$URL"             -o /tmp/dolp-build/existing-v0772.bundle; then
+            if gzip -t /tmp/dolp-build/existing-v0772.bundle 2>/dev/null; then
+              gzip -dc /tmp/dolp-build/existing-v0772.bundle > /tmp/dolp-build/existing-v0772.html
+              actual_size=$(wc -c < /tmp/dolp-build/existing-v0772.html)
+              actual_sha=$(sha256sum /tmp/dolp-build/existing-v0772.html | awk '{print $1}')
+              if [ "$actual_size" = "$EXPECTED_SIZE" ] && [ "$actual_sha" = "$EXPECTED_SHA" ]; then
+                echo 'valid=true' >> "$GITHUB_OUTPUT"
+                cp /tmp/dolp-build/existing-v0772.bundle /tmp/dolp-site/payload/game-v0772.bundle
+                cp /tmp/dolp-build/existing-v0772.html /tmp/dolp-build/exact-v0772.html
+                echo 'Reused verified exact v0.772 bundle from gh-pages.'
+                exit 0
+              fi
+            fi
+          fi
+
+          echo 'valid=false' >> "$GITHUB_OUTPUT"
+          rm -f /tmp/dolp-build/existing-v0772.bundle /tmp/dolp-build/existing-v0772.html
+          echo 'No reusable exact v0.772 bundle; bootstrapping from official package.'
+
+      - name: Bootstrap exact Loader blocks from verified v0.768
+        if: steps.reuse772.outputs.valid != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          EXPECTED_SIZE='67147773'
+          EXPECTED_SHA='ebda02401b169579b30bfd3796e685e60bee23d46ee06f61548c5e7f0f2108ef'
+          PRIMARY='https://raw.githubusercontent.com/yfei2304-dotcom/dolp-aoki-mys-modloader/gh-pages/payload/game-v0768.bundle'
+          FALLBACK='https://dolp-aoki-modloader.yfei2304.chatgpt.site/payload/game-v0768.bundle'
+
+          if ! curl -fL --retry 2 --max-time 180             -A 'Mozilla/5.0 (GitHub Actions DoLP builder)'             "$PRIMARY"             -o /tmp/dolp-build/exact768.bundle; then
+            curl -fL --retry 2 --max-time 180               -A 'Mozilla/5.0 (GitHub Actions DoLP builder)'               "$FALLBACK"               -o /tmp/dolp-build/exact768.bundle
+          fi
+
+          gzip -dc /tmp/dolp-build/exact768.bundle > /tmp/dolp-build/exact768.html
+          actual_size=$(wc -c < /tmp/dolp-build/exact768.html)
+          actual_sha=$(sha256sum /tmp/dolp-build/exact768.html | awk '{print $1}')
+          echo "exact768_bytes=$actual_size"
+          echo "exact768_sha256=$actual_sha"
+          test "$actual_size" = "$EXPECTED_SIZE"
+          test "$actual_sha" = "$EXPECTED_SHA"
+
           python3 - <<'PY'
-          import json, os, time, urllib.request
           from pathlib import Path
-          from concurrent.futures import ThreadPoolExecutor, as_completed
-
-          raw_mapping=json.loads(Path('/tmp/dolp-build/img.json').read_text('utf-8'))
-          allowed_ext={'.png','.gif','.jpg','.jpeg','.webp','.svg','.avif'}
-          mapping={k:v for k,v in raw_mapping.items() if Path(k).suffix.lower() in allowed_ext}
-          skipped=[k for k in raw_mapping if k not in mapping]
-          print(f'image_mappings={len(mapping)}, skipped_non_images={len(skipped)}')
-          for k in skipped[:20]: print('skip_non_image:', k)
-          root=Path('/tmp/dolp-site/img')
-          root.mkdir(parents=True, exist_ok=True)
-
-          def safe_dest(key):
-              key=key.replace('\\', '/').lstrip('/')
-              parts=[p for p in key.split('/') if p not in ('', '.')]
-              if '..' in parts:
-                  raise ValueError(f'unsafe path: {key}')
-              return root.joinpath(*parts)
-
-          def download(item):
-              key, mapped=item
-              dest=safe_dest(key)
-              dest.parent.mkdir(parents=True, exist_ok=True)
-              url='https://img.dolmods.net/' + mapped
-              last=None
-              for attempt in range(4):
-                  try:
-                      req=urllib.request.Request(url, headers={'User-Agent':'Mozilla/5.0 (GitHub Actions DoLP builder)'})
-                      with urllib.request.urlopen(req, timeout=45) as r:
-                          data=r.read()
-                      if not data:
-                          raise RuntimeError('empty response')
-                      dest.write_bytes(data)
-                      return key, len(data), None
-                  except Exception as e:
-                      last=e
-                      time.sleep(0.4 * (attempt + 1))
-              return key, 0, repr(last)
-
-          total=len(mapping.items())
-          failures=[]
-          bytes_total=0
-          done=0
-          with ThreadPoolExecutor(max_workers=24) as pool:
-              futures=[pool.submit(download, item) for item in mapping.items()]
-              for fut in as_completed(futures):
-                  key, size, err=fut.result()
-                  done += 1
-                  bytes_total += size
-                  if err:
-                      failures.append((key, err))
-                  if done % 1000 == 0 or done == total:
-                      print(f'images {done}/{total}, bytes={bytes_total}, failures={len(failures)}', flush=True)
-
-          if failures:
-              print('first failures:')
-              for key, err in failures[:30]:
-                  print(key, err)
-              raise SystemExit(f'Image materialization failed for {len(failures)} files')
-
-          print('image_count=', total)
-          print('image_bytes=', bytes_total)
+          import hashlib
+          s=Path('/tmp/dolp-build/exact768.html').read_text('utf-8')
+          first=s.find('<script')
+          end1=s.find('</script>', first)
+          if first < 0 or end1 < 0: raise SystemExit('Loader block 1 boundary not found')
+          end1 += len('</script>')
+          second=s.find('<script', end1)
+          end2=s.find('</script>', second)
+          if second < 0 or end2 < 0: raise SystemExit('Loader block 2 boundary not found')
+          end2 += len('</script>')
+          one=s[first:end1]
+          two=s[second:end2]
+          if 'window.modDataValueZipList' not in one:
+              raise SystemExit('First embedded script is not modDataValueZipList')
+          if 'modSC2DataManager' not in two:
+              raise SystemExit('Second embedded script is not BeforeSC2')
+          Path('/tmp/dolp-build/loader1.txt').write_text(one,'utf-8')
+          Path('/tmp/dolp-build/loader2.txt').write_text(two,'utf-8')
+          print('loader1_bytes=',len(one.encode()))
+          print('loader1_sha256=',hashlib.sha256(one.encode()).hexdigest())
+          print('loader2_bytes=',len(two.encode()))
+          print('loader2_sha256=',hashlib.sha256(two.encode()).hexdigest())
+          if hashlib.sha256(one.encode()).hexdigest() != 'a3557e4a8ce4437465ebad14fc9e837e9bdf32c234d65d2bb3d7b5de6fb34cd1':
+              raise SystemExit('Loader block 1 SHA mismatch')
+          if hashlib.sha256(two.encode()).hexdigest() != '997eb15e1eaea3e29d8ed6586d4929c4bdf221a63349de4d7cbd75356626776e':
+              raise SystemExit('Loader block 2 SHA mismatch')
           PY
 
-          test -s /tmp/dolp-site/img/misc/sky/stars/star-2.png
-          test -s /tmp/dolp-site/img/misc/sky/stars/star-3.png
-          test -s /tmp/dolp-site/img/misc/sky/stars/star-4.png
-          test -s /tmp/dolp-site/img/misc/locations/banner/ice.png
-          test -s /tmp/dolp-site/img/misc/locations/banner/water.png
-          test -s /tmp/dolp-site/img/misc/locations/banner/reflective.png
-          test -s /tmp/dolp-site/img/misc/locations/banner/snow.png
-          test -s /tmp/dolp-site/img/ui/card-logo.png
-          echo "materialized_files=$(find /tmp/dolp-site/img -type f | wc -l)"
-          echo "materialized_bytes=$(du -sb /tmp/dolp-site/img | awk '{print $1}')"
+      - name: Reconstruct exact v0.772 ModLoader core
+        if: steps.reuse772.outputs.valid != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir /tmp/dolp-build/patcher
+          cd /tmp/dolp-build/patcher
+          npm init -y >/dev/null 2>&1
+          npm install --silent cheerio@1.0.0-rc.12
+
+          cat > patch.js <<'JS'
+          const fs = require('fs');
+          const cheerio = require('cheerio');
+
+          const htmlF = fs.readFileSync('../official-base.html', 'utf8');
+          const ht = cheerio.load(htmlF);
+          const sC2Script = ht('script#script-sugarcube[type="text/javascript"]');
+          if (sC2Script.length !== 1) {
+            throw new Error('SugarCube script count=' + sC2Script.length);
+          }
+
+          let sc2JsText = sC2Script.text();
+          const starHeadOld = 'window.SugarCube={},jQuery((()=>{';
+          const startHeadNew = 'window.SugarCube={},window.mainStart=((()=>{';
+          const startTailOld = '}))})(window,window.document,jQuery);';
+          const startTailNew = `}))
+          // inject ModLoader on there
+          if (typeof window.modSC2DataManager !== 'undefined') {
+          window.modSC2DataManager.startInit().then(() => window.jsPreloader.startLoad()).then(() => {window.mainStart();window.initI10n(l10nStrings);}).catch(err => {console.error(err);});}else {window.mainStart();window.initI10n(l10nStrings);
+          }
+              })(window,window.document,jQuery);`;
+
+          if (!sc2JsText.includes(starHeadOld)) throw new Error('SugarCube start marker not found');
+          if (!sc2JsText.includes(startTailOld)) throw new Error('SugarCube tail marker not found');
+
+          sc2JsText = sc2JsText
+            .split(starHeadOld).join(startHeadNew)
+            .split(startTailOld).join(startTailNew);
+          sC2Script.text(sc2JsText);
+
+          const patched = ht.root().html();
+          if (!patched) throw new Error('Empty Cheerio output');
+          fs.writeFileSync('../sc2patched.html', patched, 'utf8');
+          JS
+
+          node patch.js
+          cd /tmp/dolp-build
+
+          python3 - <<'PY'
+          from pathlib import Path
+          import hashlib
+
+          base=Path('/tmp/dolp-build/sc2patched.html').read_text('utf-8')
+          one=Path('/tmp/dolp-build/loader1.txt').read_text('utf-8')
+          two=Path('/tmp/dolp-build/loader2.txt').read_text('utf-8')
+
+          first_script=base.find('<script')
+          if first_script < 0:
+              raise SystemExit('First script not found after sc2Patch')
+
+          csp_find = "content=\"default-src 'self' 'unsafe-eval' 'unsafe-inline'"
+          csp_replace = "content=\"default-src 'self' 'unsafe-eval' 'unsafe-inline' *"
+          if csp_find not in base:
+              raise SystemExit('Expected CSP marker not found')
+          base2=base.replace(csp_find, csp_replace, 1)
+
+          final=base2[:first_script] + '\n' + one + '\n' + two + '\n' + base2[first_script:]
+          out=Path('/tmp/dolp-build/exact-v0772.html')
+          out.write_text(final,'utf-8')
+
+          data=final.encode()
+          size=len(data)
+          sha=hashlib.sha256(data).hexdigest()
+          print('exact_v0772_bytes=',size)
+          print('exact_v0772_sha256=',sha)
+
+          expected_size=68512914
+          expected_sha='6e792d8fd8992e74df8906b091495abc61582602e8d88eb6b32680e94635ef8d'
+          if size != expected_size:
+              raise SystemExit(f'Exact v0.772 size mismatch: {size} != {expected_size}')
+          if sha != expected_sha:
+              raise SystemExit(f'Exact v0.772 SHA mismatch: {sha} != {expected_sha}')
+          PY
+
+          grep -aq '0.5.12.6 DoLP v0.772' /tmp/dolp-build/exact-v0772.html
+          grep -aq 'window.modDataValueZipList' /tmp/dolp-build/exact-v0772.html
+          gzip -9 -n -c /tmp/dolp-build/exact-v0772.html > /tmp/dolp-site/payload/game-v0772.bundle
+
+      - name: Verify final exact v0.772 bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+          EXPECTED_SIZE='68512914'
+          EXPECTED_SHA='6e792d8fd8992e74df8906b091495abc61582602e8d88eb6b32680e94635ef8d'
+          gzip -t /tmp/dolp-site/payload/game-v0772.bundle
+          gzip -dc /tmp/dolp-site/payload/game-v0772.bundle > /tmp/dolp-build/final-check.html
+          actual_size=$(wc -c < /tmp/dolp-build/final-check.html)
+          actual_sha=$(sha256sum /tmp/dolp-build/final-check.html | awk '{print $1}')
+          echo "final_uncompressed_bytes=$actual_size"
+          echo "final_sha256=$actual_sha"
+          echo "final_bundle_bytes=$(wc -c < /tmp/dolp-site/payload/game-v0772.bundle)"
+          test "$actual_size" = "$EXPECTED_SIZE"
+          test "$actual_sha" = "$EXPECTED_SHA"
+          grep -aq '0.5.12.6 DoLP v0.772' /tmp/dolp-build/final-check.html
+          grep -aq 'window.modDataValueZipList' /tmp/dolp-build/final-check.html
 
       - name: Fetch local gzip fallback library
         shell: bash
         run: |
           set -euo pipefail
-          curl -fL --retry 2 --max-time 60             'https://dolp-aoki-modloader.yfei2304.chatgpt.site/pako_inflate.min.js'             -o /tmp/dolp-site/pako_inflate.min.js
-          test $(wc -c < /tmp/dolp-site/pako_inflate.min.js) -gt 1000
+          curl -fL --retry 3 --max-time 60             -A 'Mozilla/5.0 (GitHub Actions DoLP builder)'             'https://cdn.jsdelivr.net/npm/pako@2.1.0/dist/pako_inflate.min.js'             -o /tmp/dolp-site/pako_inflate.min.js
+          test "$(wc -c < /tmp/dolp-site/pako_inflate.min.js)" -gt 1000
 
       - name: Build Service Worker and launcher
         shell: bash
         run: |
           set -euo pipefail
-          BUILD_ID="mys-static-${GITHUB_SHA:0:12}"
-          COMPRESSED=$(wc -c < /tmp/dolp-site/payload/game-v0768.bundle)
-          UNCOMPRESSED=$(wc -c < /tmp/dolp-build/source.html)
+          BUILD_ID="mys772-${GITHUB_SHA:0:12}"
+          COMPRESSED=$(wc -c < /tmp/dolp-site/payload/game-v0772.bundle)
+          UNCOMPRESSED=$(wc -c < /tmp/dolp-build/final-check.html)
           IMAGE_COUNT=$(find /tmp/dolp-site/img -type f | wc -l)
-          IMAGE_BYTES=$(du -sb /tmp/dolp-site/img | awk '{print $1}')
+          IMAGE_BYTES=$(python3 - <<'PY'
+          from pathlib import Path
+          print(sum(p.stat().st_size for p in Path('/tmp/dolp-site/img').rglob('*') if p.is_file()))
+          PY
+          )
 
           cat > /tmp/dolp-site/sw.js <<EOF
           "use strict";
           importScripts("./pako_inflate.min.js");
 
           const BUILD_ID = "${BUILD_ID}";
-          const GAME_BUNDLE = "payload/game-v0768.bundle";
+          const GAME_BUNDLE = "payload/game-v0772.bundle";
 
           self.addEventListener("install", event => event.waitUntil(self.skipWaiting()));
           self.addEventListener("activate", event => event.waitUntil(self.clients.claim()));
@@ -193,7 +316,7 @@ jobs:
           });
 
           function isGame(pathname) {
-            return pathname.endsWith("/game-v0768.html");
+            return pathname.endsWith("/game-v0772.html");
           }
 
           async function serveGame() {
@@ -216,8 +339,9 @@ jobs:
                 "Content-Type": "text/html; charset=utf-8",
                 "Cache-Control": "no-store",
                 "X-DoLP-Web-Build": BUILD_ID,
-                "X-DoLP-Art-Pack": "aokiutage_mys",
-                "X-DoLP-Images": "same-origin-static",
+                "X-DoLP-Core": "0.5.12.6 DoLP v0.772",
+                "X-DoLP-Art-Pack": "aokiutage_mys_v0.772",
+                "X-DoLP-Images": "official-same-origin-static",
               },
             });
           }
@@ -245,7 +369,7 @@ jobs:
             <meta charset="utf-8">
             <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
             <meta name="theme-color" content="#101014">
-            <title>DoLP v0.768 · Aoki+Mysterious · ModLoader</title>
+            <title>DoLP v0.772 · Aoki+Mysterious · ModLoader</title>
             <style>
               :root{color-scheme:dark;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}*{box-sizing:border-box}
               body{margin:0;min-height:100svh;display:grid;place-items:center;background:#101014;color:#f2edf7;padding:1.2rem}
@@ -257,8 +381,8 @@ jobs:
           <body>
             <main>
               <div class="spinner" id="spinner"></div>
-              <h1 id="status">正在準備 DoLP v0.768…</h1>
-              <p id="detail">Aoki+Mysterious · ModLoader · 同站圖片版</p>
+              <h1 id="status">正在準備 DoLP v0.772…</h1>
+              <p id="detail">Aoki+Mysterious v0.772 · ModLoader · 官方完整圖片包</p>
               <div class="actions" id="actions" hidden><button id="retry" type="button">重新載入</button></div>
             </main>
             <noscript>此遊戲需要 JavaScript。</noscript>
@@ -266,7 +390,7 @@ jobs:
               (() => {
                 "use strict";
                 const BUILD_ID = "${BUILD_ID}";
-                const GAME_PAGE = "game-v0768.html";
+                const GAME_PAGE = "game-v0772.html";
                 const siteRoot = new URL("./", location.href);
                 const targetUrl = new URL(GAME_PAGE, siteRoot);
                 targetUrl.searchParams.set("build", BUILD_ID);
@@ -315,7 +439,7 @@ jobs:
                     return;
                   }
 
-                  const attemptKey = "dolp-mys-sw-boot-" + BUILD_ID;
+                  const attemptKey = "dolp-mys772-sw-boot-" + BUILD_ID;
                   const attempts = Number(sessionStorage.getItem(attemptKey) || "0") + 1;
                   sessionStorage.setItem(attemptKey, String(attempts));
                   if (attempts > 3) throw new Error("遊戲核心沒有被 Service Worker 正確接管，請回到主網址再試一次。");
@@ -336,16 +460,16 @@ jobs:
           EOF
 
           cp /tmp/dolp-build/launcher.html /tmp/dolp-site/index.html
-          cp /tmp/dolp-build/launcher.html /tmp/dolp-site/game-v0768.html
+          cp /tmp/dolp-build/launcher.html /tmp/dolp-site/game-v0772.html
           touch /tmp/dolp-site/.nojekyll
 
           cat > /tmp/dolp-site/build-info.json <<EOF
-          {"core":"0.5.11.9 DoLP v0.768","artPack":"aokiutage_mys","build":"${BUILD_ID}","sourceSha256":"ebda02401b169579b30bfd3796e685e60bee23d46ee06f61548c5e7f0f2108ef","compressedBytes":${COMPRESSED},"uncompressedBytes":${UNCOMPRESSED},"imageMode":"same-origin-static","imageCount":${IMAGE_COUNT},"imageBytes":${IMAGE_BYTES}}
+          {"core":"0.5.12.6 DoLP v0.772","artPack":"aokiutage_mys_v0.772","build":"${BUILD_ID}","sourceSha256":"6e792d8fd8992e74df8906b091495abc61582602e8d88eb6b32680e94635ef8d","compressedBytes":${COMPRESSED},"uncompressedBytes":${UNCOMPRESSED},"imageMode":"official-same-origin-static","imageCount":${IMAGE_COUNT},"imageBytes":${IMAGE_BYTES},"officialPackageSha256":"27227b0fa2f56e4cf2b4b8cacbc908ba2f0904f7a7b745b21b87e056dd7daf32"}
           EOF
 
-          echo "BUILD_ID=$BUILD_ID"
-          echo "IMAGE_COUNT=$IMAGE_COUNT"
-          echo "IMAGE_BYTES=$IMAGE_BYTES"
+          echo "BUILD_ID=${BUILD_ID}"
+          echo "IMAGE_COUNT=${IMAGE_COUNT}"
+          echo "IMAGE_BYTES=${IMAGE_BYTES}"
 
       - name: Publish generated site to gh-pages branch
         shell: bash
@@ -357,5 +481,5 @@ jobs:
           git rm -rf . >/dev/null 2>&1 || true
           cp -a /tmp/dolp-site/. .
           git add -A
-          git commit -m "Deploy DoLP v0.768 Aoki+Mysterious static-image site"
+          git commit -m "Deploy exact DoLP v0.772 Aoki+Mysterious ModLoader site"
           git push --force origin HEAD:gh-pages
