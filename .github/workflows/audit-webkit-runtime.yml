@@ -1,0 +1,115 @@
+name: Audit live v0.772 with Playwright WebKit
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/audit-webkit-runtime.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  webkit-audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Install Playwright WebKit
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir /tmp/webkit-audit
+          cd /tmp/webkit-audit
+          npm init -y >/dev/null 2>&1
+          npm install --silent playwright@1.59.1
+          npx playwright install --with-deps webkit
+
+      - name: Audit live site in WebKit
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd /tmp/webkit-audit
+          cat > audit.js <<'JS'
+          const { webkit } = require('playwright');
+
+          (async () => {
+            const root='https://yfei2304-dotcom.github.io/dolp-aoki-mys-modloader/';
+            const info=await (await fetch(root+'build-info.json?webkitAudit='+Date.now(),{cache:'no-store'})).json();
+            console.log('LIVE_BUILD_INFO='+JSON.stringify(info));
+            if(info.core!=='0.5.12.6 DoLP v0.772') throw new Error('Wrong live core');
+            if(info.sourceSha256!=='6e792d8fd8992e74df8906b091495abc61582602e8d88eb6b32680e94635ef8d') throw new Error('Wrong source SHA');
+            if(info.imageCount!==30917) throw new Error('Wrong image count');
+
+            const browser=await webkit.launch({headless:true});
+            const context=await browser.newContext({serviceWorkers:'allow'});
+            const page=await context.newPage();
+
+            const badResponses=[];
+            const failedRequests=[];
+            const pageErrors=[];
+            const consoleErrors=[];
+
+            page.on('response',r=>{
+              if(r.status()>=400) badResponses.push({status:r.status(),url:r.url(),type:r.request().resourceType()});
+            });
+            page.on('requestfailed',r=>failedRequests.push({url:r.url(),type:r.resourceType(),error:r.failure()?.errorText||null}));
+            page.on('pageerror',e=>pageErrors.push(String(e)));
+            page.on('console',m=>{ if(m.type()==='error') consoleErrors.push(m.text()); });
+
+            await page.goto(root+'?webkit='+encodeURIComponent(info.build),{waitUntil:'domcontentloaded',timeout:120000});
+            await page.waitForURL(u=>u.pathname.endsWith('/game-v0772.html'),{timeout:120000});
+
+            await page.waitForFunction(() =>
+              Array.isArray(window.modDataValueZipList) &&
+              window.modDataValueZipList.length===23 &&
+              typeof window.modSC2DataManager!=='undefined' &&
+              typeof window.modUtils!=='undefined',
+              null,{timeout:120000}
+            );
+
+            await page.waitForTimeout(10000);
+
+            const state=await page.evaluate(async()=>{
+              const reg=await navigator.serviceWorker?.getRegistration();
+              const imgs=[...document.images].map(i=>({
+                src:i.currentSrc||i.src,
+                complete:i.complete,
+                naturalWidth:i.naturalWidth,
+                naturalHeight:i.naturalHeight
+              }));
+              return {
+                href:location.href,
+                title:document.title,
+                controlled:!!navigator.serviceWorker?.controller,
+                controllerScript:navigator.serviceWorker?.controller?.scriptURL||null,
+                activeWorker:reg?.active?.scriptURL||null,
+                modZipCount:Array.isArray(window.modDataValueZipList)?window.modDataValueZipList.length:null,
+                hasModManager:typeof window.modSC2DataManager!=='undefined',
+                hasModUtils:typeof window.modUtils!=='undefined',
+                hasDecompressionStream:typeof DecompressionStream==='function',
+                imageElements:imgs.length,
+                brokenImages:imgs.filter(i=>i.complete&&i.naturalWidth===0),
+                bodyTextSample:(document.body?.innerText||'').slice(0,500),
+              };
+            });
+
+            console.log('WEBKIT_STATE='+JSON.stringify(state));
+            console.log('BAD_RESPONSES='+JSON.stringify(badResponses));
+            console.log('FAILED_REQUESTS='+JSON.stringify(failedRequests));
+            console.log('PAGE_ERRORS='+JSON.stringify(pageErrors));
+            console.log('CONSOLE_ERRORS='+JSON.stringify(consoleErrors));
+
+            if(!state.controlled) throw new Error('WebKit page is not Service Worker controlled');
+            if(!state.controllerScript?.includes('/sw.js?build='+info.build)) throw new Error('Unexpected Service Worker controller');
+            if(state.modZipCount!==23) throw new Error('Embedded ModLoader zip count mismatch');
+            if(!state.hasModManager||!state.hasModUtils) throw new Error('ModLoader globals missing');
+            if(!state.title.includes('Degrees of Lewdity Plus')) throw new Error('Unexpected title');
+            if(state.brokenImages.length) throw new Error('Broken DOM images: '+JSON.stringify(state.brokenImages));
+            if(failedRequests.length) throw new Error('Failed requests: '+JSON.stringify(failedRequests));
+
+            await browser.close();
+            console.log('LIVE_WEBKIT_RUNTIME_V0772=PASS');
+          })().catch(e=>{console.error(e);process.exit(1);});
+          JS
+          node audit.js
