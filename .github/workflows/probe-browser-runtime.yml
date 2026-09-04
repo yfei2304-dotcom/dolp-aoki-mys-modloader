@@ -1,0 +1,112 @@
+name: Probe live browser runtime v0.772
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/probe-browser-runtime.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  browser-probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Locate system Chrome
+        id: chrome
+        shell: bash
+        run: |
+          set -euo pipefail
+          for p in /usr/bin/google-chrome /usr/bin/google-chrome-stable /usr/bin/chromium /usr/bin/chromium-browser; do
+            if [ -x "$p" ]; then
+              echo "path=$p" >> "$GITHUB_OUTPUT"
+              "$p" --version
+              exit 0
+            fi
+          done
+          echo 'No system Chrome/Chromium found'
+          exit 1
+
+      - name: Install lightweight Playwright client
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir /tmp/browser-probe
+          cd /tmp/browser-probe
+          npm init -y >/dev/null 2>&1
+          npm install --silent playwright-core@1.59.1
+
+      - name: Open live site through Service Worker
+        env:
+          CHROME_PATH: ${{ steps.chrome.outputs.path }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd /tmp/browser-probe
+          cat > probe.js <<'JS'
+          const { chromium } = require('playwright-core');
+
+          (async () => {
+            const root = 'https://yfei2304-dotcom.github.io/dolp-aoki-mys-modloader/';
+            const browser = await chromium.launch({
+              headless: true,
+              executablePath: process.env.CHROME_PATH,
+              args: ['--no-sandbox', '--disable-dev-shm-usage'],
+            });
+            const context = await browser.newContext({ serviceWorkers: 'allow' });
+            const page = await context.newPage();
+
+            const messages = [];
+            page.on('console', msg => {
+              const text = msg.text();
+              if (messages.length < 80) messages.push(msg.type() + ': ' + text.slice(0, 500));
+            });
+            page.on('pageerror', err => {
+              if (messages.length < 80) messages.push('pageerror: ' + String(err).slice(0, 500));
+            });
+
+            await page.goto(root, { waitUntil: 'domcontentloaded', timeout: 120000 });
+
+            await page.waitForURL(url => url.pathname.endsWith('/game-v0772.html'), {
+              timeout: 120000,
+            });
+
+            await page.waitForFunction(() => {
+              return Array.isArray(window.modDataValueZipList) && window.modDataValueZipList.length === 23;
+            }, null, { timeout: 120000 });
+
+            const state = await page.evaluate(async () => {
+              const reg = await navigator.serviceWorker.getRegistration();
+              return {
+                href: location.href,
+                title: document.title,
+                controlled: !!navigator.serviceWorker.controller,
+                controllerScript: navigator.serviceWorker.controller ? navigator.serviceWorker.controller.scriptURL : null,
+                activeWorker: reg && reg.active ? reg.active.scriptURL : null,
+                modZipCount: Array.isArray(window.modDataValueZipList) ? window.modDataValueZipList.length : null,
+                hasModManager: typeof window.modSC2DataManager !== 'undefined',
+                hasModUtils: typeof window.modUtils !== 'undefined',
+              };
+            });
+
+            console.log('BROWSER_STATE=' + JSON.stringify(state));
+            console.log('BROWSER_CONSOLE_SAMPLE=' + JSON.stringify(messages));
+
+            if (!state.href.includes('/game-v0772.html')) throw new Error('Not on v0.772 game route');
+            if (!state.controlled) throw new Error('Page is not controlled by Service Worker');
+            if (!state.controllerScript || !state.controllerScript.includes('/sw.js')) throw new Error('Wrong Service Worker controller');
+            if (state.modZipCount !== 23) throw new Error('Embedded ModLoader zip count mismatch: ' + state.modZipCount);
+            if (!state.hasModManager) throw new Error('modSC2DataManager was not initialized');
+            if (!state.hasModUtils) throw new Error('modUtils was not initialized');
+
+            await browser.close();
+            console.log('LIVE_BROWSER_RUNTIME_V0772=PASS');
+          })().catch(err => {
+            console.error(err);
+            process.exit(1);
+          });
+          JS
+          node probe.js
