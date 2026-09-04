@@ -1,0 +1,50 @@
+name: Search upstream archives for missing image assets
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/probe-upstream-asset-archives.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  search:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        ref: [v0.772, v0.775, master]
+    steps:
+      - name: Download source archive and search exact filenames
+        shell: bash
+        run: |
+          set -euo pipefail
+          REF='${{ matrix.ref }}'
+          API='https://gitgud.io/api/v4/projects/Frostberg%2Fdegrees-of-lewdity-plus'
+          ENC=$(python3 -c 'import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1],safe=""))' "$REF")
+          curl -fL --retry 2 --max-time 300 -A 'Mozilla/5.0'             "$API/repository/archive.tar.gz?sha=$ENC" -o source.tar.gz
+          mkdir source
+          tar -xzf source.tar.gz -C source --strip-components=1
+
+          echo "ref=$REF archive_bytes=$(wc -c < source.tar.gz)"
+          echo '=== exact basename matches ==='
+          find source -type f \( -name 'wolf-harmony.png' -o -name 'xray_vaginal.png' \) -printf '%s %p\n' | sort || true
+
+          echo '=== filename/string references ==='
+          grep -RIl --exclude='*.map' --exclude='*.png' --exclude='*.jpg' --exclude='*.gif'             -e 'wolf-harmony.png' -e 'xray_vaginal.png' source 2>/dev/null | sort | head -n 100 || true
+
+          python3 - <<'PY'
+          from pathlib import Path
+          import hashlib
+          hits=[]
+          for p in Path('source').rglob('*'):
+              if p.is_file() and p.name in ('wolf-harmony.png','xray_vaginal.png'):
+                  data=p.read_bytes()
+                  hits.append((str(p),len(data),hashlib.sha256(data).hexdigest()))
+          print('asset_hit_count=',len(hits))
+          for x in hits: print('ASSET',*x)
+          PY
