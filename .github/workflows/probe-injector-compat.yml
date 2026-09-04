@@ -1,0 +1,63 @@
+name: Verify legacy ModLoader injector across v0.768 and v0.772
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/probe-injector-compat.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Clone v0.768 and v0.772
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --depth 1 --branch v0.768 https://gitgud.io/Frostberg/degrees-of-lewdity-plus.git v768
+          git clone --depth 1 --branch v0.772 https://gitgud.io/Frostberg/degrees-of-lewdity-plus.git v772
+          echo "v768=$(git -C v768 rev-parse HEAD)"
+          echo "v772=$(git -C v772 rev-parse HEAD)"
+
+      - name: Build and inject v0.768 with its own injector
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd v768
+          chmod +x devTools/tweego/tweego_linux64 compile.sh
+          find ./version -type f -exec sed -i 's/DoLP version/DoLP v0.768/g' {} +
+          find ./game/01-config/sugarcubeConfig.js -type f -exec sed -i 's/DoLP version/DoLP v0.768/g' {} +
+          FORCE_VERSION='' bash ./compile.sh
+          node dist-insertTools/insert2html.cjs "Degrees of Lewdity.html" modList.json dist-BeforeSC2/BeforeSC2.js
+          echo "v768_base_size=$(wc -c < 'Degrees of Lewdity.html')"
+          echo "v768_base_sha=$(sha256sum 'Degrees of Lewdity.html' | awk '{print $1}')"
+          echo "v768_mod_size=$(wc -c < 'Degrees of Lewdity.html.mod.html')"
+          echo "v768_mod_sha=$(sha256sum 'Degrees of Lewdity.html.mod.html' | awk '{print $1}')"
+          echo 'v768_expected_size=67147773'
+          echo 'v768_expected_sha=ebda02401b169579b30bfd3796e685e60bee23d46ee06f61548c5e7f0f2108ef'
+          cp dist-insertTools/insert2html.cjs /tmp/insert2html-v768.cjs
+          cp dist-BeforeSC2/BeforeSC2.js /tmp/BeforeSC2-v768.js
+          cp modList.json /tmp/modList-v768.json
+
+      - name: Build v0.772 and inject with v0.768 injector
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd v772
+          chmod +x devTools/tweego/tweego_linux64 compile.sh
+          find ./version -type f -exec sed -i 's/DoLP version/DoLP v0.772/g' {} +
+          find ./game/01-config/sugarcubeConfig.js -type f -exec sed -i 's/DoLP version/DoLP v0.772/g' {} +
+          FORCE_VERSION='' bash ./compile.sh
+          node /tmp/insert2html-v768.cjs "Degrees of Lewdity.html" /tmp/modList-v768.json /tmp/BeforeSC2-v768.js
+          echo "v772_base_size=$(wc -c < 'Degrees of Lewdity.html')"
+          echo "v772_base_sha=$(sha256sum 'Degrees of Lewdity.html' | awk '{print $1}')"
+          echo "v772_legacy_mod_size=$(wc -c < 'Degrees of Lewdity.html.mod.html')"
+          echo "v772_legacy_mod_sha=$(sha256sum 'Degrees of Lewdity.html.mod.html' | awk '{print $1}')"
+          echo "v772_modData_count=$(grep -ao 'window.modDataValueZipList' 'Degrees of Lewdity.html.mod.html' | wc -l || true)"
+          echo 'v772_expected_size=68512914'
+          echo 'v772_expected_sha=6e792d8fd8992e74df8906b091495abc61582602e8d88eb6b32680e94635ef8d'
