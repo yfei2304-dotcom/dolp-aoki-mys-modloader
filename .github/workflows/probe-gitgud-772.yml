@@ -1,0 +1,62 @@
+name: Probe DoLP v0.772 upstream
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/probe-gitgud-772.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Query GitGud tags and inspect v0.772 archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          API='https://gitgud.io/api/v4/projects/Frostberg%2Fdegrees-of-lewdity-plus'
+          echo '=== tags matching 772 ==='
+          curl -fL --retry 2 --max-time 60 -A 'Mozilla/5.0' "$API/repository/tags?per_page=100" -o tags.json
+          python3 - <<'PY'
+          import json
+          tags=json.load(open('tags.json'))
+          for t in tags:
+              if '772' in t.get('name','') or '0.772' in t.get('message',''):
+                  print(t.get('name'), t.get('target'), t.get('commit',{}).get('id'))
+          print('tag_count',len(tags))
+          PY
+
+          python3 - <<'PY' > candidates.txt
+          import json
+          tags=json.load(open('tags.json'))
+          for t in tags:
+              n=t.get('name','')
+              if '772' in n:
+                  print(n)
+          PY
+          if [ ! -s candidates.txt ]; then
+            echo 'NO_772_TAG_IN_FIRST_PAGE'
+            exit 0
+          fi
+          TAG=$(head -n1 candidates.txt)
+          echo "chosen_tag=$TAG"
+          ENC=$(python3 -c 'import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1],safe=""))' "$TAG")
+          curl -fL --retry 2 --max-time 180 -A 'Mozilla/5.0'             "$API/repository/archive.tar.gz?sha=$ENC" -o dolp772.tar.gz
+          echo "archive_bytes=$(wc -c < dolp772.tar.gz)"
+          mkdir src
+          tar -xzf dolp772.tar.gz -C src --strip-components=1
+          echo '=== top level ==='
+          find src -maxdepth 2 -type f | sed 's#^src/##' | sort | head -n 120
+          echo '=== package/build hints ==='
+          for x in package.json webpack.config.js gulpfile.js README.md; do
+            if [ -f "src/$x" ]; then echo "--- $x ---"; sed -n '1,220p' "src/$x"; fi
+          done
+          echo '=== imagepacks dirs ==='
+          find src/imagepacks -maxdepth 2 -type d 2>/dev/null | sed 's#^src/##' | sort | head -n 120
+          echo '=== html candidates ==='
+          find src -type f \( -name '*.html' -o -name '*.htm' \) -printf '%s %p\n' | sort -nr | head -n 30
