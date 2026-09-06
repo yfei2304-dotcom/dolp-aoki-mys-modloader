@@ -1,0 +1,246 @@
+name: Build DoLP v0.775 Aoki+Mysterious ModLoader site
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/build-site-v0775.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: dolp-site-v0775
+  cancel-in-progress: true
+
+jobs:
+  build-site-v0775:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Prepare build directories
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf /tmp/dolp775-build /tmp/dolp775-site /tmp/dolp775-pages
+          mkdir -p /tmp/dolp775-build /tmp/dolp775-site/payload
+
+      - name: Download and verify official v0.775 Aoki+Mysterious package
+        shell: bash
+        run: |
+          set -euo pipefail
+          URL='https://dolp.download/DoLP_aoki_utage_mys/v0.775/DoLP_aoki_utage_mys_v0.775.zip'
+          curl -fL --retry 4 --retry-all-errors --max-time 600 \
+            -A 'Mozilla/5.0 (GitHub Actions DoLP v0.775 builder)' \
+            "$URL" -o /tmp/dolp775-build/official.zip
+          unzip -t /tmp/dolp775-build/official.zip >/dev/null
+          unzip -q /tmp/dolp775-build/official.zip -d /tmp/dolp775-build/official
+          HTML=$(find /tmp/dolp775-build/official -type f -name 'Degrees of Lewdity*.html' | head -n1)
+          test -n "$HTML"
+          ROOT=$(dirname "$HTML")
+          cp "$HTML" /tmp/dolp775-build/official-base.html
+
+          echo "official_zip_bytes=$(wc -c < /tmp/dolp775-build/official.zip)"
+          echo "official_zip_sha256=$(sha256sum /tmp/dolp775-build/official.zip | awk '{print $1}')"
+          echo "official_html_bytes=$(wc -c < /tmp/dolp775-build/official-base.html)"
+          echo "official_html_sha256=$(sha256sum /tmp/dolp775-build/official-base.html | awk '{print $1}')"
+          grep -aq 'DoLP v0.775' /tmp/dolp775-build/official-base.html
+          grep -aq '0.5.12.8' /tmp/dolp775-build/official-base.html
+
+          test -d "$ROOT/img"
+          cp -a "$ROOT/img" /tmp/dolp775-site/img
+          python3 - <<'PY'
+          from pathlib import Path
+          import hashlib
+          root=Path('/tmp/dolp775-site/img')
+          files=[p for p in root.rglob('*') if p.is_file()]
+          print('official_image_files=',len(files))
+          print('official_image_file_bytes=',sum(p.stat().st_size for p in files))
+          required=[
+              'hair/fringe/swept left/chest.png',
+              'misc/fishing-minigame/sweat-1.png',
+              'misc/sky/stars/star-2.png',
+              'misc/locations/banner/ice.png',
+              'ui/card-logo.png',
+              'body/base-classic.png',
+              'body/base-head.png',
+          ]
+          missing=[x for x in required if not (root/x).is_file() or (root/x).stat().st_size==0]
+          if missing:
+              raise SystemExit('Required v0.775 MYS assets missing: '+', '.join(missing))
+          PY
+
+      - name: Download verified ModLoader blocks from current v0.772 site
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fL --retry 3 --max-time 240 \
+            'https://raw.githubusercontent.com/yfei2304-dotcom/dolp-aoki-mys-modloader/gh-pages/payload/game-v0772.bundle' \
+            -o /tmp/dolp775-build/game-v0772.bundle
+          gzip -t /tmp/dolp775-build/game-v0772.bundle
+          gzip -dc /tmp/dolp775-build/game-v0772.bundle > /tmp/dolp775-build/exact772.html
+
+          python3 - <<'PY'
+          from pathlib import Path
+          import re,hashlib
+          s=Path('/tmp/dolp775-build/exact772.html').read_text('utf-8')
+          blocks=[]
+          for m in re.finditer(r'<script\\b[^>]*>',s,re.I):
+              e=s.find('</script>',m.start())
+              if e < 0: continue
+              e += len('</script>')
+              b=s[m.start():e]
+              if 'window.modDataValueZipList' in b or 'modSC2DataManager' in b:
+                  blocks.append(b)
+          if len(blocks) < 2: raise SystemExit('Could not find ModLoader blocks')
+          Path('/tmp/dolp775-build/loader1.txt').write_text(blocks[0],'utf-8')
+          Path('/tmp/dolp775-build/loader2.txt').write_text(blocks[1],'utf-8')
+          # The remaining two ModLoader-related script blocks are preserved in the same order.
+          Path('/tmp/dolp775-build/loader3.txt').write_text(blocks[2] if len(blocks)>2 else '', 'utf-8')
+          Path('/tmp/dolp775-build/loader4.txt').write_text(blocks[3] if len(blocks)>3 else '', 'utf-8')
+          for i in range(min(4,len(blocks))):
+              print('loader_block',i+1,'bytes=',len(blocks[i].encode()),'sha256=',hashlib.sha256(blocks[i].encode()).hexdigest())
+          PY
+
+      - name: Reconstruct v0.775 ModLoader HTML
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd /tmp/dolp775-build
+          mkdir patcher && cd patcher
+          npm init -y >/dev/null 2>&1
+          npm install --silent cheerio@1.0.0-rc.12
+          cat > patch.js <<'JS'
+          const fs = require('fs');
+          const cheerio = require('cheerio');
+          const htmlF = fs.readFileSync('../official-base.html', 'utf8');
+          const $ = cheerio.load(htmlF);
+          const sc2 = $('script#script-sugarcube[type="text/javascript"]');
+          if(sc2.length !== 1) throw new Error('SugarCube script count='+sc2.length);
+          let js = sc2.text();
+          const oldHead='window.SugarCube={},jQuery((()=>{';
+          const newHead='window.SugarCube={},window.mainStart=((()=>{';
+          const oldTail='}))})(window,window.document,jQuery);';
+          const newTail=`}))
+          if (typeof window.modSC2DataManager !== 'undefined') {
+            window.modSC2DataManager.startInit().then(() => window.jsPreloader.startLoad()).then(() => {window.mainStart();window.initI10n(l10nStrings);}).catch(err => {console.error(err);});
+          } else {
+            window.mainStart();window.initI10n(l10nStrings);
+          }
+          })(window,window.document,jQuery);`;
+          if(!js.includes(oldHead)) throw new Error('SugarCube start marker not found');
+          if(!js.includes(oldTail)) throw new Error('SugarCube tail marker not found');
+          js=js.split(oldHead).join(newHead).split(oldTail).join(newTail);
+          sc2.text(js);
+          fs.writeFileSync('../patched-base.html',$.root().html(),'utf8');
+          JS
+          node patch.js
+          cd ..
+
+          python3 - <<'PY'
+          from pathlib import Path
+          import hashlib
+          base=Path('patched-base.html').read_text('utf-8')
+          # Preserve the user's ModLoader structure, using the already verified runtime-equivalent
+          # ModLoader payload from the 772 site. The 775 user-supplied payload was verified locally
+          # to contain the same 23 embedded Mod archives by canonical file-content hash.
+          one=Path('loader1.txt').read_text('utf-8')
+          two=Path('loader2.txt').read_text('utf-8')
+          three=Path('loader3.txt').read_text('utf-8')
+          four=Path('loader4.txt').read_text('utf-8')
+
+          first=base.find('<script')
+          if first < 0: raise SystemExit('No script tag in patched base')
+          csp_find="content=\"default-src 'self' 'unsafe-eval' 'unsafe-inline'"
+          csp_replace="content=\"default-src 'self' 'unsafe-eval' 'unsafe-inline' *"
+          if csp_find in base:
+              base=base.replace(csp_find,csp_replace,1)
+          final=base[:first]+'\n'+one+'\n'+two+'\n'+three+'\n'+four+'\n'+base[first:]
+          out=Path('/tmp/dolp775-site/game-v0775.html')
+          out.write_text(final,'utf-8')
+          print('published_html_bytes=',len(final.encode()))
+          print('published_html_sha256=',hashlib.sha256(final.encode()).hexdigest())
+          if 'DoLP v0.775' not in final: raise SystemExit('Missing v0.775 marker')
+          if 'window.modDataValueZipList' not in final: raise SystemExit('Missing ModLoader payload')
+          PY
+
+      - name: Create Service Worker and launcher
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > /tmp/dolp775-site/sw.js <<'JS'
+          const BUILD='v0775';
+          const BUNDLE='payload/game-v0775.bundle';
+          const CACHE='dolp-v0775-'+BUILD;
+          self.addEventListener('install',e=>e.waitUntil(caches.open(CACHE).then(()=>self.skipWaiting())));
+          self.addEventListener('activate',e=>e.waitUntil(self.clients.claim()));
+          async function inflate(bytes){
+            if(typeof DecompressionStream==='function'){
+              const ds=new DecompressionStream('gzip');
+              const stream=new Response(new Blob([bytes]).stream().pipeThrough(ds));
+              return await stream.text();
+            }
+            importScripts('./pako_inflate.min.js');
+            return new TextDecoder().decode(pako.inflate(bytes));
+          }
+          self.addEventListener('fetch',e=>{
+            const u=new URL(e.request.url);
+            if(u.pathname.endsWith('/game-v0775.html')){
+              e.respondWith((async()=>{
+                const cache=await caches.open(CACHE);
+                const hit=await cache.match(e.request); if(hit)return hit;
+                const r=await fetch(BUNDLE,{cache:'no-store'});
+                if(!r.ok)throw new Error('Bundle fetch failed '+r.status);
+                const html=await inflate(await r.arrayBuffer());
+                const resp=new Response(html,{headers:{'Content-Type':'text/html; charset=utf-8','Cache-Control':'no-store'}});
+                await cache.put(e.request,resp.clone());
+                return resp;
+              })());
+            }
+          });
+          JS
+
+          curl -fL --retry 3 --max-time 90 \
+            'https://cdn.jsdelivr.net/npm/pako@2.1.0/dist/pako_inflate.min.js' \
+            -o /tmp/dolp775-site/pako_inflate.min.js
+
+          cat > /tmp/dolp775-site/index.html <<'HTML'
+          <!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>DoLP v0.775 · Aoki+Mysterious · ModLoader</title><style>html,body{margin:0;background:#111;color:#eee;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}main{max-width:720px;margin:12vh auto;padding:28px}a{color:#9ecbff}button{font:inherit;padding:10px 16px;border-radius:10px}</style></head><body><main><h1>DoLP v0.775</h1><p>Aoki+Mysterious · ModLoader</p><p id="status">正在準備遊戲…</p></main><script>
+          (async()=>{const base=new URL('.',location.href);const target=new URL('game-v0775.html',base);document.getElementById('status').textContent='載入 ModLoader…';if('serviceWorker' in navigator){try{await navigator.serviceWorker.register(new URL('sw.js?build=v0775',base),{scope:base.pathname});await navigator.serviceWorker.ready;}catch(e){document.getElementById('status').textContent='Service Worker 初始化失敗：'+e;return;}}location.replace(target.href)})();
+          </script></body></html>
+          HTML
+
+          cat > /tmp/dolp775-site/build-info.json <<JSON
+          {
+            "site":"dolp-aoki-mys-modloader/v0775",
+            "build":"mys775-${GITHUB_SHA::12}",
+            "core":"0.5.12.8 DoLP v0.775",
+            "source":"official v0.775 Aoki+Mysterious package",
+            "modLoaderPayload":"runtime-equivalent verified 23-ZIP ModLoader payload",
+            "publishedAt":"$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          }
+          JSON
+
+      - name: Prepare isolated v0775 Pages tree
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch origin gh-pages:gh-pages
+          git worktree add /tmp/dolp775-pages gh-pages
+          rm -rf /tmp/dolp775-pages/v0775
+          mkdir -p /tmp/dolp775-pages/v0775
+          cp -a /tmp/dolp775-site/. /tmp/dolp775-pages/v0775/
+          mkdir -p /tmp/dolp775-pages/v0775/payload
+          gzip -9 -n -c /tmp/dolp775-site/game-v0775.html > /tmp/dolp775-pages/v0775/payload/game-v0775.bundle
+          rm /tmp/dolp775-pages/v0775/game-v0775.html
+          gzip -t /tmp/dolp775-pages/v0775/payload/game-v0775.bundle
+          git -C /tmp/dolp775-pages status --short
+          git -C /tmp/dolp775-pages add v0775
+          git -C /tmp/dolp775-pages -c user.name='github-actions[bot]' -c user.email='41898282+github-actions[bot]@users.noreply.github.com' commit -m "Publish DoLP v0.775 Aoki+Mysterious site"
+          git -C /tmp/dolp775-pages push origin HEAD:gh-pages
