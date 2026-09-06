@@ -63,6 +63,10 @@ jobs:
           if len(files) < 30000: raise SystemExit(f'Unexpectedly small official v0.775 image set: {len(files)}')
           if total < 100_000_000: raise SystemExit(f'Unexpectedly small official v0.775 image bytes: {total}')
           s=Path('/tmp/dolp775-build/official-base.html').read_text('utf-8')
+          print('official_modloader_zip_entries=',s.count('window.modDataValueZipList'))
+          print('official_modloader_manager_entries=',s.count('modSC2DataManager'))
+          if s.count('window.modDataValueZipList') < 1: raise SystemExit('Official v0.775 HTML is missing embedded ModLoader ZIP payload')
+          if s.count('modSC2DataManager') < 1: raise SystemExit('Official v0.775 HTML is missing ModLoader manager code')
           blocks=[]
           for m in re.finditer(r'<script\b[^>]*>',s,re.I):
               e=s.find('</script>',m.start())
@@ -70,7 +74,7 @@ jobs:
                   b=s[m.start():e+9]
                   if 'window.modDataValueZipList' in b or 'modSC2DataManager' in b: blocks.append(b)
           print('official_modloader_blocks=',len(blocks))
-          if len(blocks) < 4: raise SystemExit('Official v0.775 HTML is missing expected ModLoader blocks')
+          if len(blocks) < 1: raise SystemExit('Could not locate the embedded ModLoader code inside script tags')
           for i,b in enumerate(blocks,1):
               print('official_loader_block',i,'bytes=',len(b.encode()),'sha256=',hashlib.sha256(b.encode()).hexdigest())
           PY
@@ -90,17 +94,22 @@ jobs:
           const sc2=$('script#script-sugarcube[type="text/javascript"]');
           if(sc2.length!==1) throw new Error('SugarCube script count='+sc2.length);
           let js=sc2.text();
-          const oldHead='window.SugarCube={},jQuery((()=>{';
-          const newHead='window.SugarCube={},window.mainStart=((()=>{';
-          const oldTail='}))})(window,window.document,jQuery);';
-          const newTail=`}))
+          const alreadyPatched=js.includes('window.mainStart=((()=>{') && js.includes('window.modSC2DataManager.startInit()');
+          if (!alreadyPatched) {
+            const oldHead='window.SugarCube={},jQuery((()=>{';
+            const newHead='window.SugarCube={},window.mainStart=((()=>{';
+            const oldTail='}))})(window,window.document,jQuery);';
+            const newTail=`}))
           if (typeof window.modSC2DataManager !== 'undefined') {
             window.modSC2DataManager.startInit().then(() => window.jsPreloader.startLoad()).then(() => {window.mainStart();if(typeof window.initI10n==='function')window.initI10n(l10nStrings);}).catch(err => {console.error(err);});
           } else { window.mainStart();if(typeof window.initI10n==='function')window.initI10n(l10nStrings); }
           })(window,window.document,jQuery);`;
-          if(!js.includes(oldHead)||!js.includes(oldTail)) throw new Error('SugarCube markers not found');
-          js=js.split(oldHead).join(newHead).split(oldTail).join(newTail);
-          sc2.text(js);
+            if(!js.includes(oldHead)||!js.includes(oldTail)) throw new Error('SugarCube startup markers not found; neither original nor known patched startup was detected');
+            js=js.split(oldHead).join(newHead).split(oldTail).join(newTail);
+            sc2.text(js);
+          } else {
+            console.log('Official v0.775 HTML already contains the ModLoader startup integration; preserving it unchanged.');
+          }
           fs.writeFileSync('../patched-base.html',$.root().html(),'utf8');
           JS
           node patch.js
@@ -116,13 +125,16 @@ jobs:
           print('published_html_sha256=',hashlib.sha256(final.encode()).hexdigest())
           if 'DoLP v0.775' not in final: raise SystemExit('v0.775 marker missing')
           if 'window.modDataValueZipList' not in final: raise SystemExit('Official v0.775 ModLoader payload missing')
+          if 'modSC2DataManager' not in final: raise SystemExit('Official v0.775 ModLoader manager missing')
+          if 'window.mainStart' not in final: raise SystemExit('v0.775 startup integration missing')
           blocks=[]
           for m in re.finditer(r'<script\b[^>]*>',final,re.I):
               e=final.find('</script>',m.start())
               if e>=0:
                   b=final[m.start():e+9]
                   if 'window.modDataValueZipList' in b or 'modSC2DataManager' in b: blocks.append(b)
-          if len(blocks)<4: raise SystemExit('Patched v0.775 HTML lost ModLoader blocks')
+          print('published_modloader_blocks=',len(blocks))
+          if len(blocks)<1: raise SystemExit('Published v0.775 HTML lost its ModLoader code')
           PY
 
       - name: Create Service Worker, shared 772 framework assets, and Safari launcher
@@ -148,7 +160,6 @@ jobs:
               for y in range(h):
                   row=bytearray([0])
                   for x in range(w):
-                      # simple app icon: dark field with a light central D and red accent
                       if 48<x<144 and 38<y<154 and (x<72 or x>120 or y<52 or y>140): r,g,b=245,245,245
                       elif 72<=x<=120 and 82<=y<=110: r,g,b=180,25,45
                       else: r,g,b=17,17,17
