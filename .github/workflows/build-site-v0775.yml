@@ -24,13 +24,15 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+
       - name: Prepare build directories
         shell: bash
         run: |
           set -euo pipefail
           rm -rf /tmp/dolp775-build /tmp/dolp775-site /tmp/dolp775-pages
           mkdir -p /tmp/dolp775-build /tmp/dolp775-site/payload
-      - name: Download official v0.775 Aoki+Mysterious package
+
+      - name: Download and verify official v0.775 Aoki+Mysterious package
         shell: bash
         run: |
           set -euo pipefail
@@ -52,6 +54,7 @@ jobs:
           cp -a "$ROOT/img" /tmp/dolp775-site/img
           python3 - <<'PY'
           from pathlib import Path
+          import re,hashlib
           root=Path('/tmp/dolp775-site/img')
           files=[p for p in root.rglob('*') if p.is_file()]
           total=sum(p.stat().st_size for p in files)
@@ -59,31 +62,20 @@ jobs:
           print('official_image_file_bytes=',total)
           if len(files) < 30000: raise SystemExit(f'Unexpectedly small official v0.775 image set: {len(files)}')
           if total < 100_000_000: raise SystemExit(f'Unexpectedly small official v0.775 image bytes: {total}')
-          PY
-      - name: Download verified ModLoader runtime payload from current v0.772 site
-        shell: bash
-        run: |
-          set -euo pipefail
-          curl -fL --retry 3 --max-time 240 'https://raw.githubusercontent.com/yfei2304-dotcom/dolp-aoki-mys-modloader/gh-pages/payload/game-v0772.bundle' -o /tmp/dolp775-build/game-v0772.bundle
-          gzip -t /tmp/dolp775-build/game-v0772.bundle
-          gzip -dc /tmp/dolp775-build/game-v0772.bundle > /tmp/dolp775-build/exact772.html
-          python3 - <<'PY'
-          from pathlib import Path
-          import re,hashlib
-          s=Path('/tmp/dolp775-build/exact772.html').read_text('utf-8')
+          s=Path('/tmp/dolp775-build/official-base.html').read_text('utf-8')
           blocks=[]
           for m in re.finditer(r'<script\b[^>]*>',s,re.I):
               e=s.find('</script>',m.start())
-              if e<0: continue
-              e+=9
-              b=s[m.start():e]
-              if 'window.modDataValueZipList' in b or 'modSC2DataManager' in b: blocks.append(b)
-          if len(blocks)<4: raise SystemExit('Expected 4 ModLoader-related script blocks, got '+str(len(blocks)))
-          for i,b in enumerate(blocks[:4],1):
-              Path(f'/tmp/dolp775-build/loader{i}.txt').write_text(b,'utf-8')
-              print('loader_block',i,'bytes=',len(b.encode()),'sha256=',hashlib.sha256(b.encode()).hexdigest())
+              if e>=0:
+                  b=s[m.start():e+9]
+                  if 'window.modDataValueZipList' in b or 'modSC2DataManager' in b: blocks.append(b)
+          print('official_modloader_blocks=',len(blocks))
+          if len(blocks) < 4: raise SystemExit('Official v0.775 HTML is missing expected ModLoader blocks')
+          for i,b in enumerate(blocks,1):
+              print('official_loader_block',i,'bytes=',len(b.encode()),'sha256=',hashlib.sha256(b.encode()).hexdigest())
           PY
-      - name: Reconstruct v0.775 ModLoader HTML
+
+      - name: Patch official v0.775 startup without replacing its embedded mods
         shell: bash
         run: |
           set -euo pipefail
@@ -115,20 +107,24 @@ jobs:
           cd ..
           python3 - <<'PY'
           from pathlib import Path
-          import hashlib
-          base=Path('patched-base.html').read_text('utf8')
-          blocks=[Path(f'loader{i}.txt').read_text('utf8') for i in range(1,5)]
-          first=base.find('<script')
-          if first<0: raise SystemExit('No script tag')
+          import hashlib,re
+          final=Path('patched-base.html').read_text('utf8')
           marker="content=\"default-src 'self' 'unsafe-eval' 'unsafe-inline'"
-          if marker in base: base=base.replace(marker,"content=\"default-src 'self' 'unsafe-eval' 'unsafe-inline' *",1)
-          final=base[:first]+'\n'+'\n'.join(blocks)+'\n'+base[first:]
+          if marker in final: final=final.replace(marker,"content=\"default-src 'self' 'unsafe-eval' 'unsafe-inline' *",1)
           out=Path('/tmp/dolp775-site/game-v0775.html'); out.write_text(final,'utf8')
           print('published_html_bytes=',len(final.encode()))
           print('published_html_sha256=',hashlib.sha256(final.encode()).hexdigest())
           if 'DoLP v0.775' not in final: raise SystemExit('v0.775 marker missing')
-          if 'window.modDataValueZipList' not in final: raise SystemExit('ModLoader payload missing')
+          if 'window.modDataValueZipList' not in final: raise SystemExit('Official v0.775 ModLoader payload missing')
+          blocks=[]
+          for m in re.finditer(r'<script\b[^>]*>',final,re.I):
+              e=final.find('</script>',m.start())
+              if e>=0:
+                  b=final[m.start():e+9]
+                  if 'window.modDataValueZipList' in b or 'modSC2DataManager' in b: blocks.append(b)
+          if len(blocks)<4: raise SystemExit('Patched v0.775 HTML lost ModLoader blocks')
           PY
+
       - name: Create Service Worker, shared 772 framework assets, and Safari launcher
         shell: bash
         run: |
@@ -141,25 +137,40 @@ jobs:
           self.addEventListener('fetch',e=>{const u=new URL(e.request.url);if(u.pathname.endsWith('/game-v0775.html'))e.respondWith((async()=>{const c=await caches.open(CACHE),h=await c.match(e.request);if(h)return h;const r=await fetch(BUNDLE,{cache:'no-store'});if(!r.ok)throw Error('Bundle fetch failed '+r.status);const html=await inflate(await r.arrayBuffer()),resp=new Response(html,{headers:{'Content-Type':'text/html; charset=utf-8','Cache-Control':'no-store'}});await c.put(e.request,resp.clone());return resp;})())});
           JS
           curl -fL --retry 3 --max-time 90 'https://cdn.jsdelivr.net/npm/pako@2.1.0/dist/pako_inflate.min.js' -o /tmp/dolp775-site/pako_inflate.min.js
-          cat > /tmp/dolp775-site/style.css <<'CSS'
-          /* Optional external stylesheet; intentionally empty. */
-          CSS
-          cat > /tmp/dolp775-site/usettings.js <<'JS'
-          // Optional SugarCube user settings; intentionally empty.
-          JS
+          printf '%s\n' '/* Optional external stylesheet; intentionally empty. */' > /tmp/dolp775-site/style.css
+          printf '%s\n' '// Optional SugarCube user settings; intentionally empty.' > /tmp/dolp775-site/usettings.js
           printf '[]\n' > /tmp/dolp775-site/modList.json
+          python3 - <<'PY'
+          from pathlib import Path
+          import struct,zlib
+          def png(path,n):
+              w=h=n; raw=[]
+              for y in range(h):
+                  row=bytearray([0])
+                  for x in range(w):
+                      # simple app icon: dark field with a light central D and red accent
+                      if 48<x<144 and 38<y<154 and (x<72 or x>120 or y<52 or y>140): r,g,b=245,245,245
+                      elif 72<=x<=120 and 82<=y<=110: r,g,b=180,25,45
+                      else: r,g,b=17,17,17
+                      row += bytes((r,g,b,255))
+                  raw.append(bytes(row))
+              def chunk(t,d): return struct.pack('>I',len(d))+t+d+struct.pack('>I',zlib.crc32(t+d)&0xffffffff)
+              data=b''.join(raw)
+              out=b'\x89PNG\r\n\x1a\n'+chunk(b'IHDR',struct.pack('>IIBBBBB',w,h,8,6,0,0,0))+chunk(b'IDAT',zlib.compress(data,9))+chunk(b'IEND',b'')
+              Path(path).write_bytes(out)
+          png('/tmp/dolp775-site/icon-192.png',192)
+          png('/tmp/dolp775-site/apple-touch-icon.png',180)
+          PY
           cat > /tmp/dolp775-site/manifest.json <<'JSON'
-          {"name":"DoLP v0.775 · Aoki+Mysterious · ModLoader","short_name":"DoLP v0.775","start_url":"./","scope":"./","display":"standalone","background_color":"#111111","theme_color":"#111111","icons":[{"src":"icon-192.svg","sizes":"192x192","type":"image/svg+xml","purpose":"any maskable"}]}
+          {"name":"DoLP v0.775 · Aoki+Mysterious · ModLoader","short_name":"DoLP v0.775","start_url":"./","scope":"./","display":"standalone","background_color":"#111111","theme_color":"#111111","icons":[{"src":"icon-192.png","sizes":"192x192","type":"image/png","purpose":"any maskable"}]}
           JSON
-          cat > /tmp/dolp775-site/icon-192.svg <<'SVG'
-          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 192 192"><rect width="192" height="192" rx="36" fill="#111"/><text x="96" y="116" text-anchor="middle" font-family="Arial,sans-serif" font-size="64" font-weight="700" fill="#fff">DoL</text></svg>
-          SVG
           cat > /tmp/dolp775-site/index.html <<'HTML'
-          <!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><meta name="theme-color" content="#111111"><meta name="apple-mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"><meta name="apple-mobile-web-app-title" content="DoLP v0.775"><link rel="manifest" href="manifest.json"><link rel="icon" href="icon-192.svg"><link rel="apple-touch-icon" href="icon-192.svg"><link rel="stylesheet" href="style.css"><title>DoLP v0.775 · Aoki+Mysterious · ModLoader</title></head><body style="background:#111;color:#eee;font-family:-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif"><main style="max-width:720px;margin:12vh auto;padding:28px"><h1>DoLP v0.775</h1><p>Aoki+Mysterious · ModLoader</p><p id="status">正在載入…</p></main><script>(async()=>{const b=new URL('.',location.href),t=new URL('game-v0775.html',b),s=document.getElementById('status');if('serviceWorker'in navigator){try{await navigator.serviceWorker.register(new URL('sw.js?build=v0775',b),{scope:b.pathname});await navigator.serviceWorker.ready}catch(e){s.textContent='Service Worker 初始化失敗：'+e;return}}location.replace(t.href)})();</script></body></html>
+          <!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><meta name="theme-color" content="#111111"><meta name="apple-mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"><meta name="apple-mobile-web-app-title" content="DoLP v0.775"><link rel="manifest" href="manifest.json"><link rel="icon" href="icon-192.png"><link rel="apple-touch-icon" sizes="180x180" href="apple-touch-icon.png"><link rel="stylesheet" href="style.css"><title>DoLP v0.775 · Aoki+Mysterious · ModLoader</title></head><body style="background:#111;color:#eee;font-family:-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif"><main style="max-width:720px;margin:12vh auto;padding:28px"><h1>DoLP v0.775</h1><p>Aoki+Mysterious · ModLoader</p><p id="status">正在載入…</p></main><script>(async()=>{const b=new URL('.',location.href),t=new URL('game-v0775.html',b),s=document.getElementById('status');if('serviceWorker'in navigator){try{await navigator.serviceWorker.register(new URL('sw.js?build=v0775',b),{scope:b.pathname});await navigator.serviceWorker.ready}catch(e){s.textContent='Service Worker 初始化失敗：'+e;return}}location.replace(t.href)})();</script></body></html>
           HTML
           cat > /tmp/dolp775-site/build-info.json <<JSON
-          {"site":"dolp-aoki-mys-modloader/v0775","build":"mys775-${GITHUB_SHA::12}","core":"0.5.12.8 DoLP v0.775","source":"official v0.775 Aoki+Mysterious package","officialZipBytes":$(wc -c < /tmp/dolp775-build/official.zip),"officialZipSha256":"$(sha256sum /tmp/dolp775-build/official.zip | awk '{print $1}')","officialHtmlBytes":$(wc -c < /tmp/dolp775-build/official-base.html),"officialHtmlSha256":"$(sha256sum /tmp/dolp775-build/official-base.html | awk '{print $1}')","officialImageFiles":$(find /tmp/dolp775-site/img -type f | wc -l),"officialImageBytes":$(find /tmp/dolp775-site/img -type f -printf '%s\n' | awk '{s+=$1} END{print s+0}'),"modLoaderPayload":"runtime-equivalent verified 23-ZIP payload from v0.772 framework","sharedFrameworkAssets":"style.css, usettings.js, modList.json","publishedAt":"$(date -u +%Y-%m-%dT%H:%M:%SZ)"}
+          {"site":"dolp-aoki-mys-modloader/v0775","build":"official775-${GITHUB_SHA::12}","core":"0.5.12.8 DoLP v0.775","source":"official v0.775 Aoki+Mysterious package","officialZipBytes":$(wc -c < /tmp/dolp775-build/official.zip),"officialZipSha256":"$(sha256sum /tmp/dolp775-build/official.zip | awk '{print $1}')","officialHtmlBytes":$(wc -c < /tmp/dolp775-build/official-base.html),"officialHtmlSha256":"$(sha256sum /tmp/dolp775-build/official-base.html | awk '{print $1}')","officialImageFiles":$(find /tmp/dolp775-site/img -type f | wc -l),"officialImageBytes":$(find /tmp/dolp775-site/img -type f -printf '%s\n' | awk '{s+=$1} END{print s+0}'),"modLoaderPayload":"embedded directly from official v0.775 HTML; 23-ZIP payload retained","sharedFrameworkAssets":"style.css, usettings.js, modList.json","safari":"manifest + apple-touch-icon + scoped service worker","publishedAt":"$(date -u +%Y-%m-%dT%H:%M:%SZ)"}
           JSON
+
       - name: Publish only isolated v0775 directory
         shell: bash
         run: |
@@ -175,7 +186,8 @@ jobs:
           cp /tmp/dolp775-site/usettings.js /tmp/dolp775-pages/v0775/usettings.js
           cp /tmp/dolp775-site/modList.json /tmp/dolp775-pages/v0775/modList.json
           cp /tmp/dolp775-site/manifest.json /tmp/dolp775-pages/v0775/manifest.json
-          cp /tmp/dolp775-site/icon-192.svg /tmp/dolp775-pages/v0775/icon-192.svg
+          cp /tmp/dolp775-site/icon-192.png /tmp/dolp775-pages/v0775/icon-192.png
+          cp /tmp/dolp775-site/apple-touch-icon.png /tmp/dolp775-pages/v0775/apple-touch-icon.png
           cp /tmp/dolp775-site/build-info.json /tmp/dolp775-pages/v0775/build-info.json
           gzip -9 -n -c /tmp/dolp775-site/game-v0775.html > /tmp/dolp775-pages/v0775/payload/game-v0775.bundle
           cp -a /tmp/dolp775-site/img /tmp/dolp775-pages/v0775/img
