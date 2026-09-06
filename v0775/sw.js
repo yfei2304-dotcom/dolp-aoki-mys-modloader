@@ -1,0 +1,5 @@
+const BUILD='v0775',BUNDLE='payload/game-v0775.bundle',CACHE='dolp-v0775-'+BUILD;
+self.addEventListener('install',e=>e.waitUntil(caches.open(CACHE).then(()=>self.skipWaiting())));
+self.addEventListener('activate',e=>e.waitUntil(self.clients.claim()));
+async function inflate(bytes){if(typeof DecompressionStream==='function'){const ds=new DecompressionStream('gzip');return await new Response(new Blob([bytes]).stream().pipeThrough(ds)).text();}importScripts('./pako_inflate.min.js');return new TextDecoder().decode(pako.inflate(bytes));}
+self.addEventListener('fetch',e=>{const u=new URL(e.request.url);if(u.pathname.endsWith('/game-v0775.html'))e.respondWith((async()=>{const c=await caches.open(CACHE),h=await c.match(e.request);if(h)return h;const r=await fetch(BUNDLE,{cache:'no-store'});if(!r.ok)throw Error('Bundle fetch failed '+r.status);const html=await inflate(await r.arrayBuffer()),resp=new Response(html,{headers:{'Content-Type':'text/html; charset=utf-8','Cache-Control':'no-store'}});await c.put(e.request,resp.clone());return resp;})())});
