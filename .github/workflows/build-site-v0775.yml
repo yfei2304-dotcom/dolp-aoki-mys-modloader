@@ -57,10 +57,8 @@ jobs:
           total=sum(p.stat().st_size for p in files)
           print('official_image_files=',len(files))
           print('official_image_file_bytes=',total)
-          if len(files) < 30000:
-              raise SystemExit(f'Unexpectedly small official v0.775 image set: {len(files)}')
-          if total < 100_000_000:
-              raise SystemExit(f'Unexpectedly small official v0.775 image bytes: {total}')
+          if len(files) < 30000: raise SystemExit(f'Unexpectedly small official v0.775 image set: {len(files)}')
+          if total < 100_000_000: raise SystemExit(f'Unexpectedly small official v0.775 image bytes: {total}')
           PY
       - name: Download verified ModLoader runtime payload from current v0.772 site
         shell: bash
@@ -74,7 +72,7 @@ jobs:
           import re,hashlib
           s=Path('/tmp/dolp775-build/exact772.html').read_text('utf-8')
           blocks=[]
-          for m in re.finditer(r'<script\\b[^>]*>',s,re.I):
+          for m in re.finditer(r'<script\b[^>]*>',s,re.I):
               e=s.find('</script>',m.start())
               if e<0: continue
               e+=9
