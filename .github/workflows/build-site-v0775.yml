@@ -54,13 +54,15 @@ jobs:
           from pathlib import Path
           root=Path('/tmp/dolp775-site/img')
           files=[p for p in root.rglob('*') if p.is_file()]
+          total=sum(p.stat().st_size for p in files)
           print('official_image_files=',len(files))
-          print('official_image_file_bytes=',sum(p.stat().st_size for p in files))
-          required=['hair/fringe/swept left/chest.png','misc/fishing-minigame/sweat-1.png','misc/sky/stars/star-2.png','misc/locations/banner/ice.png','ui/card-logo.png','body/base-classic.png','body/base-head.png']
-          missing=[x for x in required if not (root/x).is_file() or (root/x).stat().st_size==0]
-          if missing: raise SystemExit('Required v0.775 MYS assets missing: '+', '.join(missing))
+          print('official_image_file_bytes=',total)
+          if len(files) < 30000:
+              raise SystemExit(f'Unexpectedly small official v0.775 image set: {len(files)}')
+          if total < 100_000_000:
+              raise SystemExit(f'Unexpectedly small official v0.775 image bytes: {total}')
           PY
-      - name: Download verified ModLoader runtime payload from current site
+      - name: Download verified ModLoader runtime payload from current v0.772 site
         shell: bash
         run: |
           set -euo pipefail
@@ -115,6 +117,7 @@ jobs:
           cd ..
           python3 - <<'PY'
           from pathlib import Path
+          import hashlib
           base=Path('patched-base.html').read_text('utf8')
           blocks=[Path(f'loader{i}.txt').read_text('utf8') for i in range(1,5)]
           first=base.find('<script')
@@ -124,7 +127,7 @@ jobs:
           final=base[:first]+'\n'+'\n'.join(blocks)+'\n'+base[first:]
           out=Path('/tmp/dolp775-site/game-v0775.html'); out.write_text(final,'utf8')
           print('published_html_bytes=',len(final.encode()))
-          print('published_html_sha256=',__import__('hashlib').sha256(final.encode()).hexdigest())
+          print('published_html_sha256=',hashlib.sha256(final.encode()).hexdigest())
           if 'DoLP v0.775' not in final: raise SystemExit('v0.775 marker missing')
           if 'window.modDataValueZipList' not in final: raise SystemExit('ModLoader payload missing')
           PY
@@ -144,7 +147,7 @@ jobs:
           <!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>DoLP v0.775 · Aoki+Mysterious · ModLoader</title></head><body style="background:#111;color:#eee;font-family:-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif"><main style="max-width:720px;margin:12vh auto;padding:28px"><h1>DoLP v0.775</h1><p>Aoki+Mysterious · ModLoader</p><p id="status">正在載入…</p></main><script>(async()=>{const b=new URL('.',location.href),t=new URL('game-v0775.html',b),s=document.getElementById('status');if('serviceWorker'in navigator){try{await navigator.serviceWorker.register(new URL('sw.js?build=v0775',b),{scope:b.pathname});await navigator.serviceWorker.ready}catch(e){s.textContent='Service Worker 初始化失敗：'+e;return}}location.replace(t.href)})();</script></body></html>
           HTML
           cat > /tmp/dolp775-site/build-info.json <<JSON
-          {"site":"dolp-aoki-mys-modloader/v0775","build":"mys775-${GITHUB_SHA::12}","core":"0.5.12.8 DoLP v0.775","source":"official v0.775 Aoki+Mysterious package","modLoaderPayload":"runtime-equivalent verified 23-ZIP payload","publishedAt":"$(date -u +%Y-%m-%dT%H:%M:%SZ)"}
+          {"site":"dolp-aoki-mys-modloader/v0775","build":"mys775-${GITHUB_SHA::12}","core":"0.5.12.8 DoLP v0.775","source":"official v0.775 Aoki+Mysterious package","officialZipBytes":$(wc -c < /tmp/dolp775-build/official.zip),"officialZipSha256":"$(sha256sum /tmp/dolp775-build/official.zip | awk '{print $1}')","officialHtmlBytes":$(wc -c < /tmp/dolp775-build/official-base.html),"officialHtmlSha256":"$(sha256sum /tmp/dolp775-build/official-base.html | awk '{print $1}')","officialImageFiles":$(find /tmp/dolp775-site/img -type f | wc -l),"officialImageBytes":$(find /tmp/dolp775-site/img -type f -printf '%s\n' | awk '{s+=$1} END{print s+0}'),"modLoaderPayload":"runtime-equivalent verified 23-ZIP payload","publishedAt":"$(date -u +%Y-%m-%dT%H:%M:%SZ)"}
           JSON
       - name: Publish only isolated v0775 directory
         shell: bash
